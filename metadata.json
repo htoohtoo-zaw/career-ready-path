@@ -1,0 +1,6 @@
+{
+  "name": "Career Ready Path Database Schema",
+  "description": "Career Ready Path: personalized IT career roadmaps, mentor rating and reviews system from learners, and ATS-friendly professional CV generator from file uploads and structured inputs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

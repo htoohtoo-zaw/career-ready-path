@@ -1,0 +1,16 @@
+        }
+
+        if (signupRole === 'learner') {
+          await syncLearnerProfileAfterLogin(fallbackId, email, userName);
+                //
+            user_id: newUserId,
+            fullName: fullName || email.split('@')[0] || 'Learner',
+            targetRole: 'Full Stack Developer',
+            targetRoleSlug: 'full-stack-developer',
+            educationBackground: 'undergraduate',
+            weeklyStudyHours: '10_20',
+            createdAt: new Date().toISOString(),
+          });
+        }
+
+        setSuccessMsg('Account created successfully! Redirecting to your personalized path...');

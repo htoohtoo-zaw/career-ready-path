@@ -1,0 +1,21 @@
+        } catch (e) {
+          console.warn('Error saving fallback signup to registry:', e);
+        }
+
+        setAuthSession(fallbackRole as any, email, fallbackName, fallbackId);
+        
+        if (fallbackRole === 'learner') {
+          await syncLearnerProfileAfterLogin(fallbackId, email, userName);
+                //
+            user_id: fallbackId,
+            fullName: fallbackName,
+            targetRole: 'Full Stack Developer',
+            targetRoleSlug: 'full-stack-developer',
+            educationBackground: 'undergraduate',
+            weeklyStudyHours: '10_20',
+            createdAt: new Date().toISOString(),
+          });
+        }
+
+        if (isEmailConfirmIssue) {
+          setSuccessMsg('Logged in successfully and go browse your roadmap');

@@ -1,0 +1,16 @@
+              const userName = matched.fullName || email.split('@')[0];
+              
+              setAuthSession(userRole as any, email, userName, fallbackId);
+              
+              if (userRole === 'learner') {
+                await syncLearnerProfileAfterLogin(fallbackId, email, userName);
+                //
+                  user_id: fallbackId,
+                  fullName: userName,
+                  targetRole: 'Full Stack Developer',
+                  targetRoleSlug: 'full-stack-developer',
+                  educationBackground: 'undergraduate',
+                  weeklyStudyHours: '10_20',
+                  createdAt: new Date().toISOString(),
+                });
+              }
