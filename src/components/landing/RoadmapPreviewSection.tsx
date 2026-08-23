@@ -233,10 +233,10 @@ export const RoadmapPreviewSection: React.FC = () => {
             <div className="space-y-1">
               <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#4ff32c]/15 border border-[#4ff32c]/30 text-[10px] font-mono font-bold uppercase tracking-wider text-green-400 mb-1">
                 <span className="h-1.5 w-1.5 rounded-full bg-[#4ff32c] animate-pulse"></span>
-                {t('roadmapPreview.freeBannerBadge')}
+                {t('roadmaps are alive')}
               </div>
-              <h4 className="text-lg font-bold text-white tracking-tight">{t('roadmapPreview.freeBannerTitle')}</h4>
-              <p className="text-xs sm:text-sm text-zinc-400 max-w-xl">{t('roadmapPreview.freeBannerDesc')}</p>
+              <h4 className="text-lg font-bold text-white tracking-tight">{t('Are you excited to grow')}</h4>
+              <p className="text-xs sm:text-sm text-zinc-400 max-w-xl">{t('explore our structured roadmaps offered by special mentors')}</p>
             </div>
           </div>
           <motion.div whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.96 }}>
@@ -244,7 +244,7 @@ export const RoadmapPreviewSection: React.FC = () => {
               to="/roadmaps"
               className="inline-flex items-center gap-2 px-6 py-3 rounded-full bg-green-500 hover:bg-green-400 text-zinc-950 font-bold text-sm transition-all shadow-lg shadow-green-500/25 hover:shadow-green-500/40 whitespace-nowrap shrink-0 relative z-10 cursor-pointer"
             >
-              <span>{t('roadmapPreview.browseAllBtn')}</span>
+              <span>{t('Browse All Roadmaps')}</span>
               <ArrowRight className="h-4 w-4" />
             </Link>
           </motion.div>
