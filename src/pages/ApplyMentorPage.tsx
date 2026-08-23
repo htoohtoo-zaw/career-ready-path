@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { ShieldCheck, Upload, Linkedin, FileText, CheckCircle2, ArrowRight, AlertCircle, Loader2, X, XCircle, User, GraduationCap, Award, Briefcase, Globe, Github, Twitter, Plus, Edit2, Trash2, Check, Settings, Sparkles, BookOpen, Clock, HeartHandshake, Users, ArrowUp, ArrowDown } from 'lucide-react';
 import { setAuthSession, getAuthSession, hasPermission, DEFAULT_NODES_BY_CATEGORY } from '../lib/learnerStore';
 import { PREDEFINED_ROADMAP_NODES, CATEGORY_PRESET_NODES } from '../lib/roadmapPresets';
@@ -15,6 +15,8 @@ import { downloadMentorCV } from '../lib/cvDownload';
 import { MentorPortalDashboard } from '../components/mentor/MentorPortalDashboard';
 
 export const ApplyMentorPage: React.FC = () => {
+  const navigate = useNavigate();
+
   const [linkedinUrl, setLinkedinUrl] = useState('');
   const [experienceYears, setExperienceYears] = useState('');
   const [bio, setBio] = useState('');

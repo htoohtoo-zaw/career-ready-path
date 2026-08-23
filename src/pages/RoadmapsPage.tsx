@@ -4,7 +4,7 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Compass, Clock, GitCommit, ArrowRight, Search, Filter, Plus, X, Sparkles, CheckCircle } from 'lucide-react';
 import { supabase, isSupabaseConfigured } from '../lib/supabase/client';
 import type { RoadmapDifficulty } from '../lib/supabase/types';
@@ -133,6 +133,8 @@ const ALL_ROADMAPS: RoadmapItem[] = [
 ];
 
 export const RoadmapsPage: React.FC = () => {
+  const navigate = useNavigate();
+
   const [roadmaps, setRoadmaps] = useState<RoadmapItem[]>(ALL_ROADMAPS);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDifficulty, setSelectedDifficulty] = useState<string>('all');

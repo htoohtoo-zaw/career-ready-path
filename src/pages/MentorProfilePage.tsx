@@ -86,8 +86,9 @@ function parseCertifications(text?: string): string[] {
 }
 
 export const MentorProfilePage: React.FC = () => {
-  const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+
+  const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const toast = useToast();
   const session = getAuthSession();

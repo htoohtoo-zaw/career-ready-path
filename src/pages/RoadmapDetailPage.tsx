@@ -20,6 +20,7 @@ interface NodeItem {
 
 export const RoadmapDetailPage: React.FC = () => {
   const navigate = useNavigate();
+
   const { slug } = useParams<{ slug: string }>();
   const [nodes, setNodes] = useState<NodeItem[]>([]);
   const [activeNodeId, setActiveNodeId] = useState<string>('');

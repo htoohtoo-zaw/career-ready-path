@@ -22,6 +22,7 @@ import { AdminPanelPage } from './pages/AdminPanelPage';
 import { CVGeneratorPage } from './pages/CVGeneratorPage';
 import { MentorsPage } from './pages/MentorsPage';
 import { MentorProfilePage } from './pages/MentorProfilePage';
+import { ProtectedRoute } from './components/layout/ProtectedRoute';
 import { supabase, isSupabaseConfigured } from './lib/supabase/client';
 import { setAuthSession, clearAuthSession, getAuthSession } from './lib/learnerStore';
 
@@ -86,17 +87,17 @@ export default function App() {
               <main className="flex-grow">
                 <Routes>
                   <Route path="/" element={<LandingPage />} />
-                  <Route path="/roadmaps" element={<RoadmapsPage />} />
-                  <Route path="/roadmaps/:slug" element={<RoadmapDetailPage />} />
-                  <Route path="/mentors" element={<MentorsPage />} />
-                  <Route path="/mentors/:id" element={<MentorProfilePage />} />
-                  <Route path="/onboarding" element={<OnboardingPage />} />
-                  <Route path="/dashboard" element={<DashboardPage />} />
-                  <Route path="/cv-generator" element={<CVGeneratorPage />} />
-                  <Route path="/admin-panel" element={<AdminPanelPage />} />
+                  <Route path="/roadmaps" element={<ProtectedRoute><RoadmapsPage /></ProtectedRoute>} />
+                  <Route path="/roadmaps/:slug" element={<ProtectedRoute><RoadmapDetailPage /></ProtectedRoute>} />
+                  <Route path="/mentors" element={<ProtectedRoute><MentorsPage /></ProtectedRoute>} />
+                  <Route path="/mentors/:id" element={<ProtectedRoute><MentorProfilePage /></ProtectedRoute>} />
+                  <Route path="/onboarding" element={<ProtectedRoute><OnboardingPage /></ProtectedRoute>} />
+                  <Route path="/dashboard" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+                  <Route path="/cv-generator" element={<ProtectedRoute><CVGeneratorPage /></ProtectedRoute>} />
+                  <Route path="/admin-panel" element={<ProtectedRoute><AdminPanelPage /></ProtectedRoute>} />
                   <Route path="/auth/login" element={<AuthPage mode="login" />} />
                   <Route path="/auth/signup" element={<AuthPage mode="signup" />} />
-                  <Route path="/apply-mentor" element={<ApplyMentorPage />} />
+                  <Route path="/apply-mentor" element={<ProtectedRoute><ApplyMentorPage /></ProtectedRoute>} />
                   {/* Fallback to landing */}
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>

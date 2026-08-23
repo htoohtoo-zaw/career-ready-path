@@ -41,6 +41,7 @@ import { getAuthSession } from '../lib/learnerStore';
 
 export const MentorsPage: React.FC = () => {
   const navigate = useNavigate();
+
   const session = getAuthSession();
   const [mentors, setMentors] = useState<MentorProfile[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
