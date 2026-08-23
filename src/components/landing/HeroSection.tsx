@@ -263,7 +263,7 @@ export const HeroSection: React.FC = () => {
             variants={itemVariants}
             className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-green-500/10 border border-green-500/30 text-green-400 text-xs font-semibold shadow-sm"
           >
-            // <Sparkles className="h-3.5 w-3.5 text-green-400 shrink-0" />
+            
             <span>{t('hero.badge')}</span>
           </motion.div>
 
