@@ -348,8 +348,41 @@ export const AdminPanelPage: React.FC = () => {
           .select('*, profiles(id, email, full_name)');
 
         if (!mentorErr && dbMentors) {
-          setMentorProfiles(dbMentors);
-          localStorage.setItem('crp_db_mentor_profiles', JSON.stringify(dbMentors));
+          // Check local registry / profiles for any approved status overrides
+          const storedLocalApps: any[] = JSON.parse(localStorage.getItem('crp_local_mentor_applications') || '[]');
+          const storedProfiles: Profile[] = JSON.parse(localStorage.getItem('crp_admin_profiles') || '[]');
+          const registry: Record<string, any> = JSON.parse(localStorage.getItem('career_ready_registry') || '{}');
+
+          const mergedMentors = dbMentors.map((mp: any) => {
+            const email = (mp.profiles?.email || mp.email || '').toLowerCase();
+            const userId = mp.user_id;
+
+            const isLocalApproved = 
+              storedLocalApps.some(la => ((la.email && la.email.toLowerCase() === email) || la.userId === userId) && la.kycStatus === 'approved') ||
+              storedProfiles.some(p => ((p.email && p.email.toLowerCase() === email) || p.id === userId) && p.role === 'approved_mentor') ||
+              (email && registry[email]?.role === 'approved_mentor');
+
+            const isLocalRejected = 
+              storedLocalApps.some(la => ((la.email && la.email.toLowerCase() === email) || la.userId === userId) && la.kycStatus === 'rejected');
+
+            if (isLocalApproved) {
+              return {
+                ...mp,
+                kyc_status: 'approved',
+                kyc_rejection_reason: null,
+                profiles: mp.profiles ? { ...mp.profiles, role: 'approved_mentor' } : undefined
+              };
+            } else if (isLocalRejected && mp.kyc_status === 'pending') {
+              return {
+                ...mp,
+                kyc_status: 'rejected'
+              };
+            }
+            return mp;
+          });
+
+          setMentorProfiles(mergedMentors);
+          localStorage.setItem('crp_db_mentor_profiles', JSON.stringify(mergedMentors));
         }
       } catch (err: any) {
         console.warn('Supabase fetch failed, utilizing full LocalStorage session:', err.message);
@@ -495,13 +528,35 @@ export const AdminPanelPage: React.FC = () => {
 
     // Also update our local mentor application list
     const updatedLocalApps = localMentorApps.map(la => {
-      if ((la.email && la.email.toLowerCase() === email) || la.userId === userId) {
-        return { ...la, kycStatus: 'approved' };
+      if ((la.email && la.email.toLowerCase() === email) || la.userId === userId || la.id === app.id) {
+        return { ...la, kycStatus: 'approved', kycRejectionReason: null };
       }
       return la;
     });
     setLocalMentorApps(updatedLocalApps);
     localStorage.setItem('crp_local_mentor_applications', JSON.stringify(updatedLocalApps));
+
+    // Also update database mentor profiles state directly
+    setMentorProfiles(prev => {
+      const updated = prev.map(mp => {
+        if (
+          mp.id === app.id || 
+          mp.user_id === userId || 
+          (mp.profiles?.email && mp.profiles.email.toLowerCase() === email) ||
+          (mp.email && mp.email.toLowerCase() === email)
+        ) {
+          return {
+            ...mp,
+            kyc_status: 'approved',
+            kyc_rejection_reason: null,
+            profiles: mp.profiles ? { ...mp.profiles, role: 'approved_mentor' } : undefined
+          };
+        }
+        return mp;
+      });
+      localStorage.setItem('crp_db_mentor_profiles', JSON.stringify(updated));
+      return updated;
+    });
 
     // Update main registry
     const registryStr = localStorage.getItem('career_ready_registry') || '{}';
@@ -517,17 +572,33 @@ export const AdminPanelPage: React.FC = () => {
     // 2. If Supabase is configured, update in tables
     if (isSupabaseConfigured() && userId && !userId.startsWith('user_')) {
       try {
-        await (supabase as any)
+        const { error: pErr } = await (supabase as any)
           .from('profiles')
           .update({ role: 'approved_mentor' })
           .eq('id', userId);
 
-        await (supabase as any)
+        if (pErr) console.warn('Supabase profiles update role notice:', pErr.message);
+
+        const { error: mErr } = await (supabase as any)
           .from('mentor_profiles')
-          .update({ kyc_status: 'approved', kyc_rejection_reason: null })
+          .update({ 
+            kyc_status: 'approved', 
+            kyc_rejection_reason: null,
+            kyc_reviewed_at: new Date().toISOString()
+          })
           .eq('user_id', userId);
+
+        if (mErr) {
+          console.warn('Supabase mentor_profiles update notice (trying fallback by ID):', mErr.message);
+          if (app.id && app.id !== userId) {
+            await (supabase as any)
+              .from('mentor_profiles')
+              .update({ kyc_status: 'approved', kyc_rejection_reason: null })
+              .eq('id', app.id);
+          }
+        }
       } catch (err: any) {
-        console.warn('Supabase KYC approval failed, falling back:', err.message);
+        console.warn('Supabase KYC approval failed, local state maintained:', err.message);
       }
     }
 
@@ -547,11 +618,13 @@ export const AdminPanelPage: React.FC = () => {
       null
     );
 
-    setSuccessMsg(`Approved mentor ${name} successfully! Notifications sent.`);
+    window.dispatchEvent(new Event('crp_admin_profiles_updated'));
+    window.dispatchEvent(new Event('crp_local_mentor_applications_updated'));
+
+    setSuccessMsg(`Approved mentor ${name} successfully! Permissions & notifications updated.`);
     setReviewingApp(null);
     setLoading(false);
     setTimeout(() => setSuccessMsg(null), 4000);
-    loadData();
   };
 
   // Handle Rejecting a Mentor KYC Application
@@ -581,13 +654,35 @@ export const AdminPanelPage: React.FC = () => {
 
     // Update in local mentor application list
     const updatedLocalApps = localMentorApps.map(la => {
-      if ((la.email && la.email.toLowerCase() === email) || la.userId === userId) {
+      if ((la.email && la.email.toLowerCase() === email) || la.userId === userId || la.id === app.id) {
         return { ...la, kycStatus: 'rejected', kycRejectionReason: reason };
       }
       return la;
     });
     setLocalMentorApps(updatedLocalApps);
     localStorage.setItem('crp_local_mentor_applications', JSON.stringify(updatedLocalApps));
+
+    // Also update database mentor profiles state directly
+    setMentorProfiles(prev => {
+      const updated = prev.map(mp => {
+        if (
+          mp.id === app.id || 
+          mp.user_id === userId || 
+          (mp.profiles?.email && mp.profiles.email.toLowerCase() === email) ||
+          (mp.email && mp.email.toLowerCase() === email)
+        ) {
+          return {
+            ...mp,
+            kyc_status: 'rejected',
+            kyc_rejection_reason: reason,
+            profiles: mp.profiles ? { ...mp.profiles, role: 'learner' } : undefined
+          };
+        }
+        return mp;
+      });
+      localStorage.setItem('crp_db_mentor_profiles', JSON.stringify(updated));
+      return updated;
+    });
 
     // Update main registry to learner
     const registryStr = localStorage.getItem('career_ready_registry') || '{}';
@@ -613,7 +708,7 @@ export const AdminPanelPage: React.FC = () => {
           .update({ kyc_status: 'rejected', kyc_rejection_reason: reason })
           .eq('user_id', userId);
       } catch (err: any) {
-        console.warn('Supabase KYC rejection failed:', err.message);
+        console.warn('Supabase KYC rejection notice:', err.message);
       }
     }
 
@@ -625,12 +720,14 @@ export const AdminPanelPage: React.FC = () => {
       userId || null
     );
 
+    window.dispatchEvent(new Event('crp_admin_profiles_updated'));
+    window.dispatchEvent(new Event('crp_local_mentor_applications_updated'));
+
     setSuccessMsg(`Declined application for ${name} with reason.`);
     setReviewingApp(null);
     setRejectionReason('');
     setLoading(false);
     setTimeout(() => setSuccessMsg(null), 4000);
-    loadData();
   };
 
   // Handle Creating a New User (with password & optional live Supabase backup)
@@ -945,7 +1042,7 @@ export const AdminPanelPage: React.FC = () => {
     profiles.forEach(p => {
       if (p.role === 'pending_mentor' || p.role === 'approved_mentor') {
         const em = (p.email || '').toLowerCase();
-        if (em && !apps.some(a => (a.email || '').toLowerCase() === em)) {
+        if (em) {
           apps.push({
             id: p.id,
             userId: p.id,
@@ -961,33 +1058,65 @@ export const AdminPanelPage: React.FC = () => {
             kycStatus: p.role === 'pending_mentor' ? 'pending' : 'approved',
             submittedAt: p.created_at || new Date().toISOString(),
             rejectionReason: null,
-            source: 'local'
+            source: 'profile'
           });
         }
       }
     });
 
-    // Deduplicate by email
-    const deduplicated: any[] = [];
-    const seenEmails = new Set<string>();
-
-    const sortedApps = [...apps].sort((a, b) => {
-      if (a.source === b.source) {
-        return new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime();
-      }
-      return a.source === 'database' ? -1 : 1;
+    // Profile role map for absolute role enforcement
+    const profileRoleMap = new Map<string, string>();
+    profiles.forEach(p => {
+      if (p.email) profileRoleMap.set(p.email.toLowerCase(), p.role);
     });
 
-    for (const app of sortedApps) {
-      const emailKey = (app.email || '').toLowerCase();
-      if (!emailKey) continue;
-      if (!seenEmails.has(emailKey)) {
-        seenEmails.add(emailKey);
-        deduplicated.push(app);
-      }
-    }
+    // Deduplicate and consolidate by email and userId
+    const appMap = new Map<string, any>();
 
-    return deduplicated;
+    apps.forEach(app => {
+      const emailKey = (app.email || '').toLowerCase();
+      const userKey = app.userId || emailKey;
+      const primaryKey = emailKey || userKey;
+      if (!primaryKey) return;
+
+      const profileRole = profileRoleMap.get(emailKey);
+      let effectiveStatus = app.kycStatus || 'pending';
+      if (profileRole === 'approved_mentor') {
+        effectiveStatus = 'approved';
+      }
+
+      if (!appMap.has(primaryKey)) {
+        appMap.set(primaryKey, {
+          ...app,
+          kycStatus: effectiveStatus
+        });
+      } else {
+        const existing = appMap.get(primaryKey)!;
+        
+        // Priority rule for status: 'approved' always wins over 'pending', 'rejected' wins over 'pending'
+        const mergedStatus = 
+          profileRole === 'approved_mentor' || effectiveStatus === 'approved' || existing.kycStatus === 'approved'
+            ? 'approved'
+            : effectiveStatus === 'rejected' || existing.kycStatus === 'rejected'
+            ? 'rejected'
+            : 'pending';
+
+        appMap.set(primaryKey, {
+          ...existing,
+          ...app,
+          bio: (app.bio && app.bio.length > 5) ? app.bio : existing.bio,
+          resumePath: app.resumePath || existing.resumePath,
+          linkedinUrl: app.linkedinUrl || existing.linkedinUrl,
+          specialization: (app.specialization && app.specialization !== 'IT Specialist') ? app.specialization : (existing.specialization || app.specialization),
+          selectedTags: (app.selectedTags && app.selectedTags.length > 0) ? app.selectedTags : existing.selectedTags,
+          kycStatus: mergedStatus,
+          rejectionReason: app.rejectionReason || existing.rejectionReason,
+          submittedAt: existing.submittedAt || app.submittedAt
+        });
+      }
+    });
+
+    return Array.from(appMap.values());
   }, [localMentorApps, mentorProfiles, profiles]);
 
   // Derived Statistics synced 100% with live data
