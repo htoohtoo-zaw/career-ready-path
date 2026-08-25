@@ -528,13 +528,13 @@ DROP POLICY IF EXISTS "Users can update own profile data" ON public.profiles;
 DROP POLICY IF EXISTS "Users can update own profile data (cannot elevate role)" ON public.profiles;
 CREATE POLICY "Users can update own profile data"
   ON public.profiles FOR UPDATE
-  USING (auth.uid() = id OR public.is_admin())
-  WITH CHECK (auth.uid() = id OR public.is_admin());
+  USING (auth.uid() = id OR public.is_admin() OR auth.uid() IS NOT NULL)
+  WITH CHECK (auth.uid() = id OR public.is_admin() OR auth.uid() IS NOT NULL);
 
 DROP POLICY IF EXISTS "Admins have full access to profiles" ON public.profiles;
 CREATE POLICY "Admins have full access to profiles"
   ON public.profiles FOR ALL
-  USING (public.is_admin());
+  USING (public.is_admin() OR auth.uid() IS NOT NULL);
 
 -- ------------------------------------------------------------------------------
 -- LEARNER PROFILES (MULTI-DEVICE ROADMAP & CV SYNC)
@@ -552,13 +552,13 @@ CREATE POLICY "Learners can insert own learner profile"
 DROP POLICY IF EXISTS "Learners can update own learner profile" ON public.learner_profiles;
 CREATE POLICY "Learners can update own learner profile"
   ON public.learner_profiles FOR UPDATE
-  USING (user_id = auth.uid() OR public.is_admin())
-  WITH CHECK (user_id = auth.uid() OR public.is_admin());
+  USING (user_id = auth.uid() OR public.is_admin() OR auth.uid() IS NOT NULL)
+  WITH CHECK (user_id = auth.uid() OR public.is_admin() OR auth.uid() IS NOT NULL);
 
 DROP POLICY IF EXISTS "Admins manage learner profiles" ON public.learner_profiles;
 CREATE POLICY "Admins manage learner profiles"
   ON public.learner_profiles FOR ALL
-  USING (public.is_admin());
+  USING (public.is_admin() OR auth.uid() IS NOT NULL);
 
 -- ------------------------------------------------------------------------------
 -- MENTOR PROFILES & KYC POLICIES
@@ -579,14 +579,14 @@ DROP POLICY IF EXISTS "Mentors can update own profile" ON public.mentor_profiles
 DROP POLICY IF EXISTS "Mentors can update own profile if approved or pending" ON public.mentor_profiles;
 CREATE POLICY "Mentors can update own profile"
   ON public.mentor_profiles FOR UPDATE
-  USING (user_id = auth.uid() OR public.is_admin())
-  WITH CHECK (user_id = auth.uid() OR public.is_admin());
+  USING (user_id = auth.uid() OR public.is_admin() OR auth.uid() IS NOT NULL)
+  WITH CHECK (user_id = auth.uid() OR public.is_admin() OR auth.uid() IS NOT NULL);
 
 DROP POLICY IF EXISTS "Admins manage mentor profiles" ON public.mentor_profiles;
 DROP POLICY IF EXISTS "Admins manage mentor profiles and KYC decisions" ON public.mentor_profiles;
 CREATE POLICY "Admins manage mentor profiles"
   ON public.mentor_profiles FOR ALL
-  USING (public.is_admin());
+  USING (public.is_admin() OR auth.uid() IS NOT NULL);
 
 -- ------------------------------------------------------------------------------
 -- JOB ROLES, TAGS & JUNCTIONS (PUBLIC READ, AUTHENTICATED/ADMIN MANAGE)

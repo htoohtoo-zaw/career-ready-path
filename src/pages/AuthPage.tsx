@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Compass, Lock, Mail, User, ArrowRight, CheckCircle2, AlertCircle, Eye, EyeOff } from 'lucide-react';
-import { supabase } from '../lib/supabase/client';
+import { supabase, isSupabaseConfigured } from '../lib/supabase/client';
 import { getLearnerProfile, setAuthSession, syncLearnerProfileAfterLogin, getAuthSession, saveLearnerProfile } from '../lib/learnerStore';
 
 export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
@@ -100,6 +100,23 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
         }
         
         setAuthSession(signupRole, email, fullName, newUserId);
+        
+        // Ensure profile is in Supabase profiles table
+        if (isSupabaseConfigured() && newUserId && !newUserId.startsWith('user_')) {
+          try {
+            await (supabase as any)
+              .from('profiles')
+              .upsert({
+                id: newUserId,
+                email: cleanEmail,
+                full_name: fullName || cleanEmail.split('@')[0],
+                role: signupRole,
+                updated_at: new Date().toISOString()
+              }, { onConflict: 'id' });
+          } catch (e) {
+            console.warn('Profile upsert on signup notice:', e);
+          }
+        }
         
         // Save to registration registry for local fallback recovery
         try {
@@ -220,6 +237,18 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
               if (profile.full_name) {
                 userName = profile.full_name;
               }
+            }
+
+            const { data: mentorProf } = await (supabase as any)
+              .from('mentor_profiles')
+              .select('kyc_status')
+              .eq('user_id', data.session.user.id)
+              .maybeSingle();
+
+            if (mentorProf?.kyc_status === 'approved') {
+              dbRole = 'approved_mentor';
+            } else if (mentorProf?.kyc_status === 'pending' && dbRole !== 'approved_mentor') {
+              dbRole = 'pending_mentor';
             }
           } catch (dbErr) {
             console.warn('Could not query public.profiles during login:', dbErr);

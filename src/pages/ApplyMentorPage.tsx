@@ -74,18 +74,123 @@ export const ApplyMentorPage: React.FC = () => {
     const session = getAuthSession();
     if (!session.isLoggedIn) return;
 
+    let isMounted = true;
+
     const checkKycStatus = async () => {
-      // 1. Check local applications cache
+      const currentSession = getAuthSession();
+      if (!currentSession.isLoggedIn) return;
+
+      // 1. First check Supabase if configured (Authoritative source for cross-platform approval)
+      if (isSupabaseConfigured()) {
+        try {
+          const { data: { user } } = await supabase.auth.getUser();
+          const targetUserId = user?.id || (currentSession.userId && !currentSession.userId.startsWith('user_') ? currentSession.userId : null);
+          const targetEmail = user?.email || currentSession.email;
+
+          let mentorProfile: any = null;
+
+          if (targetUserId) {
+            const { data, error } = await (supabase as any)
+              .from('mentor_profiles')
+              .select('*')
+              .eq('user_id', targetUserId)
+              .maybeSingle();
+            if (!error && data) mentorProfile = data;
+          }
+
+          // Fallback check profile role
+          let dbProfileRole: string | null = null;
+          if (targetUserId) {
+            const { data: profData } = await (supabase as any)
+              .from('profiles')
+              .select('role, full_name')
+              .eq('id', targetUserId)
+              .maybeSingle();
+            if (profData?.role) dbProfileRole = profData.role;
+          } else if (targetEmail) {
+            const { data: profData } = await (supabase as any)
+              .from('profiles')
+              .select('role, full_name')
+              .eq('email', targetEmail)
+              .maybeSingle();
+            if (profData?.role) dbProfileRole = profData.role;
+          }
+
+          if (mentorProfile || dbProfileRole) {
+            const effectiveKycStatus = mentorProfile?.kyc_status || (dbProfileRole === 'approved_mentor' ? 'approved' : dbProfileRole === 'pending_mentor' ? 'pending' : null);
+            
+            if (effectiveKycStatus && isMounted) {
+              setKycStatus(effectiveKycStatus);
+              setRejectionReason(mentorProfile?.kyc_rejection_reason || null);
+              setSubmitted(effectiveKycStatus === 'pending' || effectiveKycStatus === 'approved' || effectiveKycStatus === 'rejected');
+
+              if (mentorProfile?.bio) setBio(mentorProfile.bio);
+              if (mentorProfile?.linkedin_url) setLinkedinUrl(mentorProfile.linkedin_url);
+              if (mentorProfile?.experience_years) setExperienceYears(mentorProfile.experience_years);
+              if (mentorProfile?.specialization) setSpecialization(mentorProfile.specialization);
+              if (mentorProfile?.tags) setSelectedTags(mentorProfile.tags);
+              if (mentorProfile?.resume_path) {
+                setResumePath(mentorProfile.resume_path);
+                setFileName(mentorProfile.resume_path.split('/').pop()?.split('_').slice(1).join('_') || 'resume.pdf');
+              }
+              if (mentorProfile?.education_background) setEducationBackground(mentorProfile.education_background);
+              if (mentorProfile?.certification) setCertification(mentorProfile.certification);
+              if (mentorProfile?.work_experience) setWorkExperience(mentorProfile.work_experience);
+              if (mentorProfile?.github_url) setGithubUrl(mentorProfile.github_url);
+              if (mentorProfile?.twitter_url) setTwitterUrl(mentorProfile.twitter_url);
+              if (mentorProfile?.website_url) setWebsiteUrl(mentorProfile.website_url);
+              if (mentorProfile?.program_title) setProgramTitle(mentorProfile.program_title);
+              if (mentorProfile?.program_description) setProgramDescription(mentorProfile.program_description);
+              if (mentorProfile?.google_form_url) setGoogleFormUrl(mentorProfile.google_form_url);
+
+              // If approved in DB, upgrade local session role to approved_mentor immediately
+              if (effectiveKycStatus === 'approved' && currentSession.role !== 'approved_mentor' && currentSession.role !== 'admin') {
+                setAuthSession('approved_mentor', targetEmail, currentSession.name, targetUserId || currentSession.userId);
+                window.dispatchEvent(new Event('crp_auth_session_changed'));
+              }
+
+              // Update local cache
+              try {
+                const appPayload = {
+                  userId: targetUserId || currentSession.userId,
+                  email: targetEmail,
+                  fullName: currentSession.name || targetEmail?.split('@')[0] || 'Mentor',
+                  bio: mentorProfile?.bio || bio,
+                  linkedinUrl: mentorProfile?.linkedin_url || linkedinUrl,
+                  experienceYears: mentorProfile?.experience_years || experienceYears,
+                  resumePath: mentorProfile?.resume_path || resumePath,
+                  specialization: mentorProfile?.specialization || specialization,
+                  selectedTags: mentorProfile?.tags || selectedTags,
+                  kycStatus: effectiveKycStatus,
+                  kycRejectionReason: mentorProfile?.kyc_rejection_reason || null,
+                  submittedAt: mentorProfile?.kyc_submitted_at || new Date().toISOString()
+                };
+                const localAppsStr = localStorage.getItem('crp_local_mentor_applications') || '[]';
+                const localApps = JSON.parse(localAppsStr);
+                const filtered = localApps.filter((a: any) => a.email?.toLowerCase() !== targetEmail?.toLowerCase());
+                filtered.push(appPayload);
+                localStorage.setItem('crp_local_mentor_applications', JSON.stringify(filtered));
+              } catch (e) {}
+
+              return;
+            }
+          }
+        } catch (dbErr: any) {
+          console.warn('Could not query mentor profile from DB:', dbErr.message);
+        }
+      }
+
+      // 2. Fallback check local applications cache
       const localAppsStr = localStorage.getItem('crp_local_mentor_applications') || '[]';
       let foundLocalApp = null;
       try {
         const localApps = JSON.parse(localAppsStr);
-        foundLocalApp = localApps.find((app: any) => app.email?.toLowerCase() === session.email?.toLowerCase());
+        foundLocalApp = localApps.find((app: any) => app.email?.toLowerCase() === currentSession.email?.toLowerCase());
       } catch (e) {
         console.warn('Error parsing local applications cache:', e);
       }
 
-      if (foundLocalApp) {
+      if (foundLocalApp && isMounted) {
         setKycStatus(foundLocalApp.kycStatus);
         setRejectionReason(foundLocalApp.kycRejectionReason);
         if (foundLocalApp.kycStatus === 'pending') {
@@ -103,7 +208,6 @@ export const ApplyMentorPage: React.FC = () => {
           setFileName(foundLocalApp.resumePath.split('/').pop()?.split('_').slice(1).join('_') || 'resume.pdf');
         }
 
-        // Load trustworthy profile details from application object
         if (foundLocalApp.profilePicUrl) setProfilePicUrl(foundLocalApp.profilePicUrl);
         if (foundLocalApp.educationBackground) setEducationBackground(foundLocalApp.educationBackground);
         if (foundLocalApp.certification) setCertification(foundLocalApp.certification);
@@ -117,76 +221,42 @@ export const ApplyMentorPage: React.FC = () => {
         return;
       }
 
-      // 2. Check Supabase if configured
-      if (isSupabaseConfigured()) {
-        try {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (user) {
-            const { data: mentorProfile, error } = await (supabase as any)
-              .from('mentor_profiles')
-              .select('*')
-              .eq('user_id', user.id)
-              .maybeSingle();
-
-            if (!error && mentorProfile) {
-              setKycStatus(mentorProfile.kyc_status);
-              setRejectionReason(mentorProfile.kyc_rejection_reason);
-              if (mentorProfile.kyc_status === 'pending') {
-                setSubmitted(true);
-              } else {
-                setSubmitted(mentorProfile.kyc_status === 'approved' || mentorProfile.kyc_status === 'rejected');
-              }
-              if (mentorProfile.bio) setBio(mentorProfile.bio);
-              if (mentorProfile.linkedin_url) setLinkedinUrl(mentorProfile.linkedin_url);
-              if (mentorProfile.experience_years) setExperienceYears(mentorProfile.experience_years);
-              if (mentorProfile.specialization) setSpecialization(mentorProfile.specialization);
-              if (mentorProfile.tags) setSelectedTags(mentorProfile.tags);
-              if (mentorProfile.resume_path) {
-                setResumePath(mentorProfile.resume_path);
-                setFileName(mentorProfile.resume_path.split('/').pop()?.split('_').slice(1).join('_') || 'resume.pdf');
-              }
-              
-              // Cache locally
-              try {
-                const pendingApplication = {
-                  userId: user.id,
-                  email: session.email,
-                  fullName: session.name || session.email?.split('@')[0] || 'Pending Mentor',
-                  bio: mentorProfile.bio,
-                  linkedinUrl: mentorProfile.linkedin_url,
-                  experienceYears: mentorProfile.experience_years,
-                  resumePath: mentorProfile.resume_path,
-                  specialization: mentorProfile.specialization,
-                  selectedTags: mentorProfile.tags,
-                  kycStatus: mentorProfile.kyc_status,
-                  kycRejectionReason: mentorProfile.kyc_rejection_reason,
-                  submittedAt: mentorProfile.kyc_submitted_at || new Date().toISOString()
-                };
-                localStorage.setItem('crp_local_mentor_applications', JSON.stringify([pendingApplication]));
-              } catch (e) {}
-              return;
-            }
-          }
-        } catch (dbErr: any) {
-          console.warn('Could not query mentor profile from DB:', dbErr.message);
+      // 3. Fallback based on session role
+      if (isMounted) {
+        if (currentSession.role === 'approved_mentor' || currentSession.role === 'mentor') {
+          setKycStatus('approved');
+          setSubmitted(true);
+        } else if (currentSession.role === 'pending_mentor') {
+          setSubmitted(false);
+          setKycStatus(null);
+        } else {
+          setSubmitted(false);
+          setKycStatus(null);
         }
-      }
-
-      // 3. Fallback: If no application is found anywhere, leave the form open to fill.
-      // After registration state, we automatically keep the KYC form open for them.
-      if (session.role === 'pending_mentor') {
-        setSubmitted(false);
-        setKycStatus(null);
-      } else if (session.role === 'approved_mentor' || session.role === 'mentor') {
-        setKycStatus('approved');
-        setSubmitted(true);
-      } else {
-        setSubmitted(false);
-        setKycStatus(null);
       }
     };
 
     checkKycStatus();
+
+    // Auto-sync polling every 4 seconds + on window focus so admin approval on laptop reflects instantly on phone
+    const pollInterval = setInterval(() => {
+      checkKycStatus();
+    }, 4000);
+
+    const onFocus = () => {
+      checkKycStatus();
+    };
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('crp_admin_profiles_updated', onFocus);
+    window.addEventListener('crp_local_mentor_applications_updated', onFocus);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('crp_admin_profiles_updated', onFocus);
+      window.removeEventListener('crp_local_mentor_applications_updated', onFocus);
+    };
   }, []);
 
   // CV Upload States
@@ -370,33 +440,54 @@ export const ApplyMentorPage: React.FC = () => {
     if (isSupabaseConfigured()) {
       try {
         const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          // 1. Update the user role in profiles to pending_mentor
+        const effectiveUserId = user?.id || (session.userId && !session.userId.startsWith('user_') ? session.userId : null);
+        const effectiveEmail = user?.email || session.email;
+        const effectiveName = session.name || user?.user_metadata?.full_name || (effectiveEmail ? effectiveEmail.split('@')[0] : 'Pending Mentor');
+
+        if (effectiveUserId) {
+          // 1. Ensure user profile exists in profiles table with pending_mentor role
           await (supabase as any)
             .from('profiles')
-            .update({ role: 'pending_mentor' })
-            .eq('id', user.id);
+            .upsert({
+              id: effectiveUserId,
+              email: effectiveEmail,
+              full_name: effectiveName,
+              role: 'pending_mentor',
+              updated_at: new Date().toISOString()
+            }, { onConflict: 'id' });
 
-          // 2. Insert or update mentor_profiles table
+          // 2. Insert or update mentor_profiles table with ALL application data
           const { error: mentorErr } = await (supabase as any)
             .from('mentor_profiles')
             .upsert({
-              user_id: user.id,
+              user_id: effectiveUserId,
               bio,
               linkedin_url: linkedinUrl,
               experience_years: experienceYears,
+              specialization,
+              tags: selectedTags,
               resume_path: resumePath,
+              github_url: githubUrl,
+              twitter_url: twitterUrl,
+              website_url: websiteUrl,
+              program_title: programTitle,
+              program_description: programDescription,
+              google_form_url: googleFormUrl,
+              education_background: educationBackground,
+              certification,
+              work_experience: workExperience,
               kyc_status: 'pending',
               kyc_submitted_at: new Date().toISOString(),
-              kyc_rejection_reason: null
+              kyc_rejection_reason: null,
+              updated_at: new Date().toISOString()
             }, { onConflict: 'user_id' });
 
-          if (mentorErr) throw mentorErr;
+          if (mentorErr) console.warn('Supabase mentor_profiles upsert notice:', mentorErr.message);
 
-          // 3. Insert user permissions or notify Admin
+          // 3. Send persistent notification for Admins
           await addNotification(
             'New Mentor KYC Application',
-            `${session.name || user.email} applied as ${specialization}. Professional credentials are ready for your review.`,
+            `${effectiveName} applied as ${specialization}. Professional credentials are ready for your review.`,
             'kyc',
             null // Null targets all admins / global system feed
           );

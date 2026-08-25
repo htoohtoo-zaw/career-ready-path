@@ -47,6 +47,19 @@ export default function App() {
             if (profile.role) role = profile.role;
             if (profile.full_name) fullName = profile.full_name;
           }
+
+          // Check if approved in mentor_profiles
+          const { data: mentorProf } = await (supabase as any)
+            .from('mentor_profiles')
+            .select('kyc_status')
+            .eq('user_id', user.id)
+            .maybeSingle();
+
+          if (mentorProf?.kyc_status === 'approved') {
+            role = 'approved_mentor';
+          } else if (mentorProf?.kyc_status === 'pending' && role !== 'approved_mentor' && role !== 'admin') {
+            role = 'pending_mentor';
+          }
         } catch (err) {
           console.warn('Error fetching profile from db:', err);
         }
@@ -71,8 +84,17 @@ export default function App() {
       syncSession(session);
     });
 
+    // Re-check on focus
+    const handleFocus = () => {
+      supabase.auth.getSession().then(({ data: { session } }) => {
+        if (session) syncSession(session);
+      });
+    };
+    window.addEventListener('focus', handleFocus);
+
     return () => {
       subscription?.unsubscribe();
+      window.removeEventListener('focus', handleFocus);
     };
   }, []);
 
