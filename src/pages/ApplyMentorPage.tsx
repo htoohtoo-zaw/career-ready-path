@@ -8,7 +8,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import { ShieldCheck, Upload, Linkedin, FileText, CheckCircle2, ArrowRight, AlertCircle, Loader2, X, XCircle, User, GraduationCap, Award, Briefcase, Globe, Github, Twitter, Plus, Edit2, Trash2, Check, Settings, Sparkles, BookOpen, Clock, HeartHandshake, Users, ArrowUp, ArrowDown } from 'lucide-react';
 import { setAuthSession, getAuthSession, hasPermission, DEFAULT_NODES_BY_CATEGORY } from '../lib/learnerStore';
 import { PREDEFINED_ROADMAP_NODES, CATEGORY_PRESET_NODES } from '../lib/roadmapPresets';
-import { supabase, isSupabaseConfigured } from '../lib/supabase/client';
+import { supabase, isSupabaseConfigured, toValidUuid, isValidUuid } from '../lib/supabase/client';
+import { pushMentorProfileToSupabase } from '../lib/supabase/dataSync';
+import { realtimeHub } from '../lib/supabase/realtime';
 import { addNotification } from '../lib/notificationsStore';
 import { ROADMAP_POSITIONS } from '../lib/mentorRoadmapSync';
 import { downloadMentorCV } from '../lib/cvDownload';
@@ -83,11 +85,27 @@ export const ApplyMentorPage: React.FC = () => {
       // 1. First check Supabase if configured (Authoritative source for cross-platform approval)
       if (isSupabaseConfigured()) {
         try {
-          const { data: { user } } = await supabase.auth.getUser();
-          const targetUserId = user?.id || (currentSession.userId && !currentSession.userId.startsWith('user_') ? currentSession.userId : null);
-          const targetEmail = user?.email || currentSession.email;
+          const { data: authData } = await supabase.auth.getUser();
+          const targetEmail = (authData?.user?.email || currentSession.email || '').toLowerCase().trim();
+          let targetUserId: string | null = authData?.user?.id && isValidUuid(authData.user.id) ? authData.user.id : null;
+
+          if (!targetUserId && currentSession.userId && isValidUuid(currentSession.userId)) {
+            targetUserId = currentSession.userId;
+          }
 
           let mentorProfile: any = null;
+
+          // If no UUID yet, look up in profiles table by email
+          if (!targetUserId && targetEmail) {
+            const { data: profByEmail } = await (supabase as any)
+              .from('profiles')
+              .select('id, role')
+              .eq('email', targetEmail)
+              .maybeSingle();
+            if (profByEmail?.id) {
+              targetUserId = profByEmail.id;
+            }
+          }
 
           if (targetUserId) {
             const { data, error } = await (supabase as any)
@@ -238,10 +256,15 @@ export const ApplyMentorPage: React.FC = () => {
 
     checkKycStatus();
 
-    // Auto-sync polling every 4 seconds + on window focus so admin approval on laptop reflects instantly on phone
+    // Subscribe to Supabase Realtime Hub for instant cross-device updates
+    const unsubscribeRealtime = realtimeHub.subscribe(() => {
+      checkKycStatus();
+    });
+
+    // Auto-sync polling every 3 seconds + on window focus
     const pollInterval = setInterval(() => {
       checkKycStatus();
-    }, 4000);
+    }, 3000);
 
     const onFocus = () => {
       checkKycStatus();
@@ -249,13 +272,16 @@ export const ApplyMentorPage: React.FC = () => {
     window.addEventListener('focus', onFocus);
     window.addEventListener('crp_admin_profiles_updated', onFocus);
     window.addEventListener('crp_local_mentor_applications_updated', onFocus);
+    window.addEventListener('crp_supabase_mentor_profiles_change', onFocus);
 
     return () => {
       isMounted = false;
+      unsubscribeRealtime();
       clearInterval(pollInterval);
       window.removeEventListener('focus', onFocus);
       window.removeEventListener('crp_admin_profiles_updated', onFocus);
       window.removeEventListener('crp_local_mentor_applications_updated', onFocus);
+      window.removeEventListener('crp_supabase_mentor_profiles_change', onFocus);
     };
   }, []);
 
@@ -401,109 +427,91 @@ export const ApplyMentorPage: React.FC = () => {
 
     setUploading(true);
     const session = getAuthSession();
+    const cleanEmail = (session.email || '').toLowerCase().trim();
+    const mentorName = session.name || (cleanEmail ? cleanEmail.split('@')[0] : 'Pending Mentor');
     
-    // Save locally
-    const fallbackId = session.userId || 'user_' + Date.now();
-    setAuthSession('pending_mentor', session.email, session.name || session.email?.split('@')[0] || 'Mentor', fallbackId);
+    // 1. Push to Supabase database tables (profiles & mentor_profiles)
+    const syncRes = await pushMentorProfileToSupabase({
+      userId: session.userId,
+      email: cleanEmail,
+      fullName: mentorName,
+      profilePicUrl: profilePicUrl || undefined,
+      specialization,
+      bio,
+      educationBackground,
+      certification,
+      workExperience,
+      linkedinUrl,
+      githubUrl,
+      twitterUrl,
+      websiteUrl,
+      selectedTags,
+      programTitle,
+      programDescription,
+      googleFormUrl,
+      isProgramPublished: true,
+      resumePath,
+      kycStatus: 'pending',
+      experienceYears: Number(experienceYears) || 5,
+    });
 
-    // Prepare profile info to store in local storage registry
+    const effectiveUserId = syncRes.userId || session.userId || toValidUuid(cleanEmail);
+
+    // 2. Save auth session locally with the verified UUID
+    setAuthSession('pending_mentor', cleanEmail, mentorName, effectiveUserId);
+
+    // 3. Save to local storage cache for instant offline and multi-tab fallback
     try {
       const pendingApplication = {
-        userId: fallbackId,
-        email: session.email,
-        fullName: session.name || session.email?.split('@')[0] || 'Pending Mentor',
+        userId: effectiveUserId,
+        email: cleanEmail,
+        fullName: mentorName,
+        profilePicUrl,
         bio,
         linkedinUrl,
-        experienceYears,
+        experienceYears: Number(experienceYears) || 5,
         resumePath,
         specialization,
         selectedTags,
+        githubUrl,
+        twitterUrl,
+        websiteUrl,
+        programTitle,
+        programDescription,
+        googleFormUrl,
+        educationBackground,
+        certification,
+        workExperience,
         kycStatus: 'pending',
         submittedAt: new Date().toISOString()
       };
       
       const localAppsStr = localStorage.getItem('crp_local_mentor_applications') || '[]';
       const localApps = JSON.parse(localAppsStr);
-      const filtered = localApps.filter((app: any) => app.email?.toLowerCase() !== session.email?.toLowerCase());
+      const filtered = localApps.filter((app: any) => app.email?.toLowerCase() !== cleanEmail);
       filtered.push(pendingApplication);
       localStorage.setItem('crp_local_mentor_applications', JSON.stringify(filtered));
 
       // Also save to our main registry
       const registryStr = localStorage.getItem('career_ready_registry') || '{}';
       const registry: Record<string, any> = JSON.parse(registryStr);
-      registry[(session.email || '').toLowerCase()] = { role: 'pending_mentor', fullName: pendingApplication.fullName, userId: session.userId };
+      registry[cleanEmail] = { role: 'pending_mentor', fullName: mentorName, userId: effectiveUserId };
       localStorage.setItem('career_ready_registry', JSON.stringify(registry));
     } catch (err) {
       console.warn('Local storage write failed:', err);
     }
 
-    if (isSupabaseConfigured()) {
-      try {
-        const { data: { user } } = await supabase.auth.getUser();
-        const effectiveUserId = user?.id || (session.userId && !session.userId.startsWith('user_') ? session.userId : null);
-        const effectiveEmail = user?.email || session.email;
-        const effectiveName = session.name || user?.user_metadata?.full_name || (effectiveEmail ? effectiveEmail.split('@')[0] : 'Pending Mentor');
-
-        if (effectiveUserId) {
-          // 1. Ensure user profile exists in profiles table with pending_mentor role
-          await (supabase as any)
-            .from('profiles')
-            .upsert({
-              id: effectiveUserId,
-              email: effectiveEmail,
-              full_name: effectiveName,
-              role: 'pending_mentor',
-              updated_at: new Date().toISOString()
-            }, { onConflict: 'id' });
-
-          // 2. Insert or update mentor_profiles table with ALL application data
-          const { error: mentorErr } = await (supabase as any)
-            .from('mentor_profiles')
-            .upsert({
-              user_id: effectiveUserId,
-              bio,
-              linkedin_url: linkedinUrl,
-              experience_years: experienceYears,
-              specialization,
-              tags: selectedTags,
-              resume_path: resumePath,
-              github_url: githubUrl,
-              twitter_url: twitterUrl,
-              website_url: websiteUrl,
-              program_title: programTitle,
-              program_description: programDescription,
-              google_form_url: googleFormUrl,
-              education_background: educationBackground,
-              certification,
-              work_experience: workExperience,
-              kyc_status: 'pending',
-              kyc_submitted_at: new Date().toISOString(),
-              kyc_rejection_reason: null,
-              updated_at: new Date().toISOString()
-            }, { onConflict: 'user_id' });
-
-          if (mentorErr) console.warn('Supabase mentor_profiles upsert notice:', mentorErr.message);
-
-          // 3. Send persistent notification for Admins
-          await addNotification(
-            'New Mentor KYC Application',
-            `${effectiveName} applied as ${specialization}. Professional credentials are ready for your review.`,
-            'kyc',
-            null // Null targets all admins / global system feed
-          );
-        }
-      } catch (err: any) {
-        console.warn('Database write failed, fallback mechanism active:', err.message);
-      }
-    }
-
-    // Still send notification to local state to make sure admin views it instantly
+    // 4. Send persistent notification for Admins
     await addNotification(
       'New Mentor KYC Application',
-      `${session.name || session.email} applied as ${specialization}. Professional credentials are ready for your review.`,
+      `${mentorName} applied as ${specialization}. Professional credentials are ready for your review.`,
       'kyc',
-      null
+      null // Null targets all admins / global system feed
     );
+
+    // Notify other components & tabs
+    window.dispatchEvent(new Event('crp_local_mentor_applications_updated'));
+    window.dispatchEvent(new Event('crp_admin_profiles_updated'));
 
     setUploading(false);
     setKycStatus('pending');

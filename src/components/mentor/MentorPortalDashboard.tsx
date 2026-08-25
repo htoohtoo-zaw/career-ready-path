@@ -61,6 +61,7 @@ import {
   pushCreatedRoadmapToSupabase
 } from '../../lib/supabase/dataSync';
 import { isSupabaseConfigured } from '../../lib/supabase/client';
+import { realtimeHub } from '../../lib/supabase/realtime';
 
 interface MentorPortalDashboardProps {
   onEditKyc?: () => void;
@@ -427,6 +428,32 @@ export const MentorPortalDashboard: React.FC<MentorPortalDashboardProps> = ({ on
       localStorage.setItem('crp_local_mentor_applications', JSON.stringify(localApps));
     } catch (err) {}
 
+    // Multi-device sync to Supabase
+    if (isSupabaseConfigured() && session.userId) {
+      pushMentorProfileToSupabase({
+        userId: session.userId,
+        email: session.email,
+        fullName: session.name || 'Mentor',
+        profilePicUrl,
+        specialization,
+        bio,
+        educationBackground,
+        certification,
+        workExperience,
+        linkedinUrl,
+        githubUrl,
+        twitterUrl,
+        websiteUrl,
+        selectedTags,
+        programTitle,
+        programDescription,
+        googleFormUrl,
+        isProgramPublished: nextState,
+        resumePath,
+        kycStatus: 'approved'
+      }).catch((e) => console.warn('Supabase mentor push notice:', e));
+    }
+
     if (nextState) {
       addNotification('Program Published! 🚀', 'Your mentorship cohort offering is now live and publicly visible on your mentor profile.', 'system', session.userId);
       setSavedSuccessMsg('Mentorship Program Published! Live on your public profile.');
@@ -477,6 +504,32 @@ export const MentorPortalDashboard: React.FC<MentorPortalDashboardProps> = ({ on
       }
       localStorage.setItem('crp_local_mentor_applications', JSON.stringify(localApps));
     } catch (err) {}
+
+    // Multi-device sync to Supabase
+    if (isSupabaseConfigured() && session.userId) {
+      pushMentorProfileToSupabase({
+        userId: session.userId,
+        email: session.email,
+        fullName: session.name || 'Mentor',
+        profilePicUrl,
+        specialization,
+        bio,
+        educationBackground,
+        certification,
+        workExperience,
+        linkedinUrl,
+        githubUrl,
+        twitterUrl,
+        websiteUrl,
+        selectedTags,
+        programTitle,
+        programDescription,
+        googleFormUrl,
+        isProgramPublished,
+        resumePath,
+        kycStatus: 'approved'
+      }).catch((e) => console.warn('Supabase mentor push notice:', e));
+    }
 
     if (isProgramPublished) {
       addNotification('Mentorship Cohort Active! 🎓', 'Your Google Form application link and program offerings are now published and active.', 'system', session.userId);
@@ -582,6 +635,23 @@ export const MentorPortalDashboard: React.FC<MentorPortalDashboardProps> = ({ on
 
     if (oldSlug && oldSlug !== slug) {
       localStorage.removeItem(`crp_roadmap_nodes_${oldSlug}`);
+    }
+
+    // Multi-device sync to Supabase
+    if (isSupabaseConfigured()) {
+      pushCreatedRoadmapToSupabase({
+        title: rmTitle,
+        slug,
+        category: rmCategory,
+        difficulty: rmDifficulty,
+        estimated_weeks: rmWeeks,
+        description: rmDescription,
+        mentorId: session.userId,
+        mentorName: session.name || 'Verified Mentor',
+        mentorEmail: session.email,
+        mentorPic: profilePicUrl,
+        nodes: rmNodes
+      }).catch((e) => console.warn('Supabase roadmap push notice:', e));
     }
 
     addNotification(

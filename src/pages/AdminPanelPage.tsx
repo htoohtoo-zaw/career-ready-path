@@ -35,12 +35,14 @@ import {
   Eye,
   EyeOff
 } from 'lucide-react';
-import { supabase, isSupabaseConfigured } from '../lib/supabase/client';
+import { supabase, isSupabaseConfigured, toValidUuid, isValidUuid } from '../lib/supabase/client';
 import { getAuthSession, setAuthSession } from '../lib/learnerStore';
 import { getMentors } from '../lib/mentorReviewStore';
 import { addNotification } from '../lib/notificationsStore';
 import { downloadMentorCV } from '../lib/cvDownload';
 import { resetScrollPosition } from '../components/layout/ScrollToTop';
+import { syncAllLocalMentorApplicationsToSupabase, pushMentorProfileToSupabase } from '../lib/supabase/dataSync';
+import { realtimeHub } from '../lib/supabase/realtime';
 
 interface Profile {
   id: string;
@@ -140,6 +142,11 @@ export const AdminPanelPage: React.FC = () => {
   const loadData = async () => {
     setLoading(true);
     setErrorMsg(null);
+
+    // Auto-sync any queued local mentor applications into Supabase
+    if (isSupabaseConfigured()) {
+      syncAllLocalMentorApplicationsToSupabase().catch(() => {});
+    }
     
     // Check local storage fallback first or use it to populate initial data
     const localProfilesStr = localStorage.getItem('crp_admin_profiles');
@@ -463,16 +470,25 @@ export const AdminPanelPage: React.FC = () => {
       loadData();
     };
 
+    const unsubscribeRealtime = realtimeHub.subscribe(() => {
+      loadData();
+    });
+
     window.addEventListener('storage', handleDataUpdate);
     window.addEventListener('crp_admin_profiles_updated', handleDataUpdate);
     window.addEventListener('crp_local_mentor_applications_updated', handleDataUpdate);
     window.addEventListener('crp_reviews_updated', handleDataUpdate);
+    window.addEventListener('crp_supabase_mentor_profiles_change', handleDataUpdate);
+    window.addEventListener('crp_supabase_profiles_change', handleDataUpdate);
 
     return () => {
+      unsubscribeRealtime();
       window.removeEventListener('storage', handleDataUpdate);
       window.removeEventListener('crp_admin_profiles_updated', handleDataUpdate);
       window.removeEventListener('crp_local_mentor_applications_updated', handleDataUpdate);
       window.removeEventListener('crp_reviews_updated', handleDataUpdate);
+      window.removeEventListener('crp_supabase_mentor_profiles_change', handleDataUpdate);
+      window.removeEventListener('crp_supabase_profiles_change', handleDataUpdate);
     };
   }, []);
 
@@ -651,39 +667,45 @@ export const AdminPanelPage: React.FC = () => {
     // 2. If Supabase is configured, update in tables
     if (isSupabaseConfigured()) {
       try {
-        if (userId && !userId.startsWith('user_')) {
-          await (supabase as any)
-            .from('profiles')
-            .update({ role: 'approved_mentor' })
-            .eq('id', userId);
+        const validId = (userId && isValidUuid(userId)) ? userId : toValidUuid(email || userId || 'mentor');
 
-          await (supabase as any)
-            .from('mentor_profiles')
-            .update({ 
-              kyc_status: 'approved', 
-              kyc_rejection_reason: null,
-              kyc_reviewed_at: new Date().toISOString()
-            })
-            .eq('user_id', userId);
-        }
+        // 1. Ensure profile exists and role is approved_mentor
+        await (supabase as any)
+          .from('profiles')
+          .upsert({
+            id: validId,
+            email: email || undefined,
+            full_name: name,
+            role: 'approved_mentor',
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'id' });
 
-        if (email) {
-          await (supabase as any)
-            .from('profiles')
-            .update({ role: 'approved_mentor' })
-            .eq('email', email);
-        }
-
-        if (app.id && app.id !== userId) {
-          await (supabase as any)
-            .from('mentor_profiles')
-            .update({ 
-              kyc_status: 'approved', 
-              kyc_rejection_reason: null,
-              kyc_reviewed_at: new Date().toISOString()
-            })
-            .eq('id', app.id);
-        }
+        // 2. Ensure mentor_profiles exists and kyc_status is approved
+        await (supabase as any)
+          .from('mentor_profiles')
+          .upsert({
+            user_id: validId,
+            kyc_status: 'approved',
+            kyc_rejection_reason: null,
+            kyc_reviewed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            bio: app.bio || 'Specialized in engineering mentorship, code reviews, and career roadmaps.',
+            specialization: app.specialization || 'Full Stack Developer',
+            linkedin_url: app.linkedinUrl || app.linkedin_url || null,
+            experience_years: Number(app.experienceYears || app.experience_years) || 5,
+            tags: app.selectedTags || app.tags || ['Full Stack Developer', 'System Design'],
+            resume_path: app.resumePath || app.resume_path || null,
+            github_url: app.githubUrl || app.github_url || null,
+            twitter_url: app.twitterUrl || app.twitter_url || null,
+            website_url: app.websiteUrl || app.website_url || null,
+            program_title: app.programTitle || app.program_title || null,
+            program_description: app.programDescription || app.program_description || null,
+            google_form_url: app.googleFormUrl || app.google_form_url || null,
+            is_program_published: app.isProgramPublished !== undefined ? app.isProgramPublished : true,
+            education_background: app.educationBackground || app.education_background || null,
+            certification: app.certification || null,
+            work_experience: app.workExperience || app.work_experience || null
+          }, { onConflict: 'user_id' });
       } catch (err: any) {
         console.warn('Supabase KYC approval notice:', err.message);
       }
@@ -789,24 +811,27 @@ export const AdminPanelPage: React.FC = () => {
     // 2. If Supabase is configured
     if (isSupabaseConfigured()) {
       try {
-        if (userId && !userId.startsWith('user_')) {
-          await (supabase as any)
-            .from('profiles')
-            .update({ role: 'learner' })
-            .eq('id', userId);
+        const validId = (userId && isValidUuid(userId)) ? userId : toValidUuid(email || userId || 'mentor');
 
-          await (supabase as any)
-            .from('mentor_profiles')
-            .update({ kyc_status: 'rejected', kyc_rejection_reason: reason })
-            .eq('user_id', userId);
-        }
+        await (supabase as any)
+          .from('profiles')
+          .upsert({
+            id: validId,
+            email: email || undefined,
+            full_name: name,
+            role: 'learner',
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'id' });
 
-        if (email) {
-          await (supabase as any)
-            .from('profiles')
-            .update({ role: 'learner' })
-            .eq('email', email);
-        }
+        await (supabase as any)
+          .from('mentor_profiles')
+          .upsert({
+            user_id: validId,
+            kyc_status: 'rejected',
+            kyc_rejection_reason: reason,
+            kyc_reviewed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'user_id' });
       } catch (err: any) {
         console.warn('Supabase KYC rejection notice:', err.message);
       }
