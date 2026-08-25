@@ -4,6 +4,15 @@
  */
 
 import { POSITION_TO_SLUG_MAP, SLUG_TO_POSITION_MAP } from './mentorRoadmapSync';
+import {
+  pushLearnerReviewToSupabase,
+  fetchReviewsFromSupabase,
+  pushMentorshipApplicationToSupabase,
+  fetchMentorshipApplicationsFromSupabase,
+  updateMentorshipApplicationInSupabase,
+  fetchAllDbMentorsFromSupabase
+} from './supabase/dataSync';
+import { isSupabaseConfigured } from './supabase/client';
 
 export interface ReviewMetrics {
   codeFeedback: number; // 1-5
@@ -779,6 +788,14 @@ export function submitLearnerReview(input: ReviewFormInput, learnerId?: string):
 
   const updated = [newReview, ...all];
   saveReviews(updated);
+
+  // Sync to Supabase in background
+  if (isSupabaseConfigured()) {
+    pushLearnerReviewToSupabase(newReview).catch((err) => {
+      console.warn('Background Supabase review sync note:', err);
+    });
+  }
+
   return newReview;
 }
 
@@ -805,11 +822,17 @@ export function toggleHelpfulVote(reviewId: string, voterId: string = 'current_u
       }
 
       newCount = updatedLikedBy.length;
-      return {
+      const updatedRev = {
         ...rev,
         likedBy: updatedLikedBy,
         helpfulCount: newCount,
       };
+
+      if (isSupabaseConfigured()) {
+        pushLearnerReviewToSupabase(updatedRev).catch((e) => console.warn('Vote sync note:', e));
+      }
+
+      return updatedRev;
     }
     return rev;
   });
@@ -880,6 +903,14 @@ export function submitMentorshipApplication(input: {
 
   const updated = [newApp, ...all];
   saveMentorshipApplications(updated);
+
+  // Sync to Supabase in background
+  if (isSupabaseConfigured()) {
+    pushMentorshipApplicationToSupabase(newApp).catch((err) => {
+      console.warn('Background Supabase application sync note:', err);
+    });
+  }
+
   return newApp;
 }
 
@@ -912,7 +943,48 @@ export function updateMentorshipApplicationStatus(
   };
 
   saveMentorshipApplications(all);
+
+  // Sync update to Supabase in background
+  if (isSupabaseConfigured()) {
+    updateMentorshipApplicationInSupabase(applicationId, status, mentorNotes).catch((err) => {
+      console.warn('Background Supabase application status update note:', err);
+    });
+  }
+
   return all[index];
+}
+
+/**
+ * Hydrate mentorship data (reviews, applications, mentors) from Supabase
+ */
+export async function hydrateMentorshipDataFromSupabase(userId?: string): Promise<void> {
+  if (!isSupabaseConfigured()) return;
+
+  try {
+    // 1. Fetch remote reviews and merge
+    const remoteReviews = await fetchReviewsFromSupabase();
+    if (remoteReviews && remoteReviews.length > 0) {
+      const localReviews = getAllReviews();
+      const localIds = new Set(localReviews.map(r => r.id));
+      const newItems = remoteReviews.filter(r => !localIds.has(r.id));
+      if (newItems.length > 0) {
+        saveReviews([...newItems, ...localReviews]);
+      }
+    }
+
+    // 2. Fetch remote applications and merge
+    const remoteApps = await fetchMentorshipApplicationsFromSupabase(userId);
+    if (remoteApps && remoteApps.length > 0) {
+      const localApps = getAllMentorshipApplications();
+      const localIds = new Set(localApps.map(a => a.id));
+      const newApps = remoteApps.filter(a => !localIds.has(a.id));
+      if (newApps.length > 0) {
+        saveMentorshipApplications([...newApps, ...localApps]);
+      }
+    }
+  } catch (err) {
+    console.warn('Hydrate mentorship data note:', err);
+  }
 }
 
 

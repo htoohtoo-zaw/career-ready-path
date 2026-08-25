@@ -4,6 +4,7 @@
  */
 
 import { supabase, isSupabaseConfigured } from './supabase/client';
+import { pushLearnerProgressToSupabase, pullLearnerProgressFromSupabase } from './supabase/dataSync';
 
 export interface LearnerProfile {
   id?: string;
@@ -204,20 +205,10 @@ export function saveLearnerProfile(profile: LearnerProfile): CustomizedRoadmap {
 
   localStorage.setItem(STORAGE_KEY_ROADMAP, JSON.stringify(roadmap));
 
-  // Also attempt background save to Supabase if configured
-  if (isSupabaseConfigured()) {
-    supabase.auth.getUser().then(({ data }) => {
-      if (data.user) {
-        (supabase.from('learner_profiles' as any) as any).upsert({
-          user_id: data.user.id,
-          target_role: enhancedProfile.targetRole,
-          education_background: enhancedProfile.educationBackground,
-          weekly_study_hours: enhancedProfile.weeklyStudyHours,
-          onboarding_completed: true,
-        }).then(({ error }: any) => {
-          if (error) console.warn('Supabase profile sync note:', error.message);
-        });
-      }
+  // Push profile and customized roadmap with nodes to Supabase for multi-device sync
+  if (isSupabaseConfigured() && enhancedProfile.user_id) {
+    pushLearnerProgressToSupabase(enhancedProfile.user_id, enhancedProfile, roadmap).catch((err) => {
+      console.warn('Background Supabase learner profile sync note:', err);
     });
   }
 
@@ -235,35 +226,32 @@ export function getLearnerProfile(): LearnerProfile | null {
 }
 
 export async function syncLearnerProfileAfterLogin(userId: string, email?: string, name?: string): Promise<LearnerProfile> {
-  // First check if profile already exists in localStorage
-  let profile = getLearnerProfile();
-  
+  // First check if Supabase has data for cross-device hydration
   if (isSupabaseConfigured() && userId) {
     try {
-      const { data, error } = await (supabase.from('learner_profiles' as any) as any)
-        .select('*')
-        .eq('user_id', userId)
-        .single();
-        
-      if (data && !error) {
-        profile = {
-          user_id: data.user_id || userId,
-          targetRole: data.target_role || 'Full Stack Developer',
-          targetRoleSlug: data.target_role ? data.target_role.toLowerCase().replace(/\s+/g, '-') : 'full-stack-developer',
-          educationBackground: data.education_background || 'undergraduate',
-          weeklyStudyHours: data.weekly_study_hours || '10_20',
-          createdAt: data.created_at || new Date().toISOString(),
-          fullName: data.full_name || name || email?.split('@')[0] || 'Learner',
+      const dbResult = await pullLearnerProgressFromSupabase(userId);
+      if (dbResult && dbResult.profile) {
+        const syncedProfile: LearnerProfile = {
+          ...dbResult.profile,
+          fullName: dbResult.profile.fullName || name || email?.split('@')[0] || 'Learner',
         };
-        saveLearnerProfile(profile);
-        return profile;
+        localStorage.setItem(STORAGE_KEY_PROFILE, JSON.stringify(syncedProfile));
+        if (dbResult.roadmap) {
+          localStorage.setItem(STORAGE_KEY_ROADMAP, JSON.stringify(dbResult.roadmap));
+        } else {
+          saveLearnerProfile(syncedProfile);
+        }
+        return syncedProfile;
       }
     } catch (err) {
-      console.warn('Supabase profile sync check note:', err);
+      console.warn('Supabase cross-device pull error, checking local store:', err);
     }
   }
 
-  // If no profile found, auto-initialize a default profile so the user never gets an error state
+  // Fallback to local profile if present
+  let profile = getLearnerProfile();
+
+  // If no profile found anywhere, auto-initialize a default profile so the user never gets an error state
   if (!profile) {
     profile = {
       user_id: userId,
@@ -295,6 +283,15 @@ export function getCustomizedRoadmap(): CustomizedRoadmap | null {
 
 export function updateCustomizedRoadmap(roadmap: CustomizedRoadmap): void {
   localStorage.setItem(STORAGE_KEY_ROADMAP, JSON.stringify(roadmap));
+  
+  // Also push to Supabase in background for cross-device synchronization
+  const session = getAuthSession();
+  const profile = getLearnerProfile();
+  if (isSupabaseConfigured() && session.userId && profile) {
+    pushLearnerProgressToSupabase(session.userId, profile, roadmap).catch((e) => {
+      console.warn('Background roadmap progress sync note:', e);
+    });
+  }
 }
 
 export function hasPermission(permissionCode: string): boolean {

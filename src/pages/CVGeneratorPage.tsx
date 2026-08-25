@@ -18,7 +18,7 @@ import {
 } from '../types/cv';
 import { 
   getActiveCV, saveActiveCV, calculateATSScore, DEFAULT_FRONTEND_CV, 
-  exportCVToPlainText, ATS_POWER_ACTION_VERBS 
+  exportCVToPlainText, ATS_POWER_ACTION_VERBS, hydrateActiveCVFromSupabase
 } from '../lib/cvStore';
 import { CVDocumentPreview } from '../components/cv/CVDocumentPreview';
 import { ATSScoreCard } from '../components/cv/ATSScoreCard';
@@ -71,6 +71,15 @@ export const CVGeneratorPage: React.FC = () => {
   const photoInputRef = useRef<HTMLInputElement>(null);
 
   const atsResult = calculateATSScore(cv);
+
+  // Hydrate from Supabase on mount for cross-device synchronization
+  useEffect(() => {
+    hydrateActiveCVFromSupabase().then((remoteCV) => {
+      if (remoteCV) {
+        setCv(remoteCV);
+      }
+    });
+  }, []);
 
   // Sync with storage on mount and changes
   useEffect(() => {

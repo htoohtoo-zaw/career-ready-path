@@ -14,6 +14,9 @@ import {
   CVTemplateId,
 } from '../types/cv';
 import { getStoredRequests } from './feedbackStore';
+import { pushActiveCVToSupabase, pullActiveCVFromSupabase } from './supabase/dataSync';
+import { isSupabaseConfigured } from './supabase/client';
+import { getAuthSession } from './learnerStore';
 
 // Common power action verbs used by ATS parsers
 export const ATS_POWER_ACTION_VERBS = [
@@ -181,6 +184,33 @@ export function getActiveCV(): CVData {
   }
 }
 
+export async function hydrateActiveCVFromSupabase(userId?: string): Promise<CVData | null> {
+  const session = getAuthSession();
+  const effectiveUserId = userId || session.userId;
+  if (!isSupabaseConfigured() || !effectiveUserId) return null;
+
+  try {
+    const remoteCV = await pullActiveCVFromSupabase(effectiveUserId);
+    if (remoteCV && remoteCV.personalInfo) {
+      localStorage.setItem(STORAGE_KEY_ACTIVE_CV, JSON.stringify(remoteCV));
+      
+      const list = getSavedCVList();
+      const existingIndex = list.findIndex(c => c.id === remoteCV.id);
+      if (existingIndex >= 0) {
+        list[existingIndex] = remoteCV;
+      } else {
+        list.push(remoteCV);
+      }
+      localStorage.setItem(STORAGE_KEY_CV_LIST, JSON.stringify(list));
+      window.dispatchEvent(new CustomEvent('crp_cv_updated', { detail: remoteCV }));
+      return remoteCV;
+    }
+  } catch (e) {
+    console.warn('Hydrate CV from Supabase note:', e);
+  }
+  return null;
+}
+
 export function saveActiveCV(cv: CVData): void {
   try {
     cv.updatedAt = new Date().toISOString();
@@ -197,6 +227,14 @@ export function saveActiveCV(cv: CVData): void {
     localStorage.setItem(STORAGE_KEY_CV_LIST, JSON.stringify(list));
 
     window.dispatchEvent(new CustomEvent('crp_cv_updated', { detail: cv }));
+
+    // Push to Supabase database for multi-device sync
+    const session = getAuthSession();
+    if (isSupabaseConfigured() && session.userId) {
+      pushActiveCVToSupabase(session.userId, cv).catch((err) => {
+        console.warn('Background Supabase CV push note:', err);
+      });
+    }
   } catch (e) {}
 }
 

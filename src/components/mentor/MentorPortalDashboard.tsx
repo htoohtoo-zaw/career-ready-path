@@ -48,13 +48,19 @@ import {
   getAllMentorshipApplications,
   getMentors,
   MentorshipApplication,
-  updateMentorshipApplicationStatus
+  updateMentorshipApplicationStatus,
+  hydrateMentorshipDataFromSupabase
 } from '../../lib/mentorReviewStore';
 import { CATEGORY_PRESET_NODES, PREDEFINED_ROADMAP_NODES } from '../../lib/roadmapPresets';
 import { ROADMAP_POSITIONS } from '../../lib/mentorRoadmapSync';
 import { downloadMentorCV } from '../../lib/cvDownload';
 import { addNotification } from '../../lib/notificationsStore';
 import { resetScrollPosition } from '../layout/ScrollToTop';
+import {
+  pushMentorProfileToSupabase,
+  pushCreatedRoadmapToSupabase
+} from '../../lib/supabase/dataSync';
+import { isSupabaseConfigured } from '../../lib/supabase/client';
 
 interface MentorPortalDashboardProps {
   onEditKyc?: () => void;
@@ -212,6 +218,9 @@ export const MentorPortalDashboard: React.FC<MentorPortalDashboardProps> = ({ on
 
   useEffect(() => {
     loadMentorApps();
+    if (isSupabaseConfigured()) {
+      hydrateMentorshipDataFromSupabase(session.userId).then(() => loadMentorApps());
+    }
     const handleAppUpdate = () => loadMentorApps();
     window.addEventListener('crp_mentorship_applications_updated', handleAppUpdate);
     return () => window.removeEventListener('crp_mentorship_applications_updated', handleAppUpdate);
@@ -336,6 +345,32 @@ export const MentorPortalDashboard: React.FC<MentorPortalDashboardProps> = ({ on
       }
       localStorage.setItem('crp_local_mentor_applications', JSON.stringify(localApps));
     } catch (err) {}
+
+    // Multi-device sync to Supabase
+    if (isSupabaseConfigured() && session.userId) {
+      pushMentorProfileToSupabase({
+        userId: session.userId,
+        email: session.email,
+        fullName: session.name || 'Mentor',
+        profilePicUrl,
+        specialization,
+        bio,
+        educationBackground,
+        certification,
+        workExperience,
+        linkedinUrl,
+        githubUrl,
+        twitterUrl,
+        websiteUrl,
+        selectedTags,
+        programTitle,
+        programDescription,
+        googleFormUrl,
+        isProgramPublished,
+        resumePath,
+        kycStatus: 'approved'
+      }).catch((e) => console.warn('Supabase mentor push notice:', e));
+    }
 
     addNotification('Profile Saved! 👤', 'Your trustworthy mentor profile details have been synchronized.', 'system', session.userId);
     setSavedSuccessMsg('Profile details saved successfully!');
