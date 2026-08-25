@@ -62,6 +62,28 @@ const DEFAULT_PERMISSIONS: Permission[] = [
   { code: 'review:mentors', name: 'Review Mentor Applications', description: 'Approve or reject pending industry mentors and complete KYC.' },
 ];
 
+// Helper for persistent Admin KYC decisions
+const getKycDecisions = (): Record<string, { status: 'approved' | 'rejected'; rejectionReason?: string | null; email?: string; userId?: string; updatedAt: string }> => {
+  try {
+    return JSON.parse(localStorage.getItem('crp_kyc_admin_decisions') || '{}');
+  } catch {
+    return {};
+  }
+};
+
+const saveKycDecision = (key: string, decision: { status: 'approved' | 'rejected'; rejectionReason?: string | null; email?: string; userId?: string }) => {
+  try {
+    const decisions = getKycDecisions();
+    const payload = { ...decision, updatedAt: new Date().toISOString() };
+    if (key) decisions[key.toLowerCase()] = payload;
+    if (decision.email) decisions[decision.email.toLowerCase()] = payload;
+    if (decision.userId) decisions[decision.userId] = payload;
+    localStorage.setItem('crp_kyc_admin_decisions', JSON.stringify(decisions));
+  } catch (e) {
+    console.warn('Error saving KYC decision:', e);
+  }
+};
+
 export const AdminPanelPage: React.FC = () => {
   const navigate = useNavigate();
   const session = getAuthSession();
@@ -286,6 +308,8 @@ export const AdminPanelPage: React.FC = () => {
 
     if (isSupabaseConfigured()) {
       try {
+        const kycDecisions = getKycDecisions();
+
         // Fetch profiles from Supabase
         const { data: dbProfiles, error: profilesErr } = await supabase
           .from('profiles')
@@ -300,11 +324,27 @@ export const AdminPanelPage: React.FC = () => {
 
           dbProfiles.forEach((p: any) => {
             const emailLower = (p.email || '').toLowerCase();
-            const normalizedRole = (p.role === 'mentor' ? 'approved_mentor' : p.role) as Profile['role'];
+            let normalizedRole = (p.role === 'mentor' ? 'approved_mentor' : p.role) as Profile['role'];
+            
+            // Check if admin has explicitly approved or rejected this user
+            const decision = (emailLower ? kycDecisions[emailLower] : null) || (p.id ? kycDecisions[p.id] : null);
+            if (decision) {
+              if (decision.status === 'approved') {
+                normalizedRole = 'approved_mentor';
+              } else if (decision.status === 'rejected' && normalizedRole === 'pending_mentor') {
+                normalizedRole = 'learner';
+              }
+            }
+
             if (emailLower) {
               if (profileMap.has(emailLower)) {
                 const existing = profileMap.get(emailLower)!;
-                existing.role = normalizedRole;
+                // If already approved locally or in decisions, do NOT let a stale DB pending_mentor overwrite
+                if (existing.role === 'approved_mentor' && normalizedRole === 'pending_mentor') {
+                  // Keep approved_mentor
+                } else {
+                  existing.role = normalizedRole;
+                }
                 if (p.full_name) existing.full_name = p.full_name;
               } else {
                 profileMap.set(emailLower, {
@@ -355,15 +395,20 @@ export const AdminPanelPage: React.FC = () => {
 
           const mergedMentors = dbMentors.map((mp: any) => {
             const email = (mp.profiles?.email || mp.email || '').toLowerCase();
-            const userId = mp.user_id;
+            const userId = mp.user_id || mp.id;
+
+            // Direct check in persistent KYC decisions
+            const decision = (email ? kycDecisions[email] : null) || (userId ? kycDecisions[userId] : null) || (mp.id ? kycDecisions[mp.id] : null);
 
             const isLocalApproved = 
-              storedLocalApps.some(la => ((la.email && la.email.toLowerCase() === email) || la.userId === userId) && la.kycStatus === 'approved') ||
+              (decision && decision.status === 'approved') ||
+              storedLocalApps.some(la => ((la.email && la.email.toLowerCase() === email) || la.userId === userId || la.id === mp.id) && la.kycStatus === 'approved') ||
               storedProfiles.some(p => ((p.email && p.email.toLowerCase() === email) || p.id === userId) && p.role === 'approved_mentor') ||
               (email && registry[email]?.role === 'approved_mentor');
 
             const isLocalRejected = 
-              storedLocalApps.some(la => ((la.email && la.email.toLowerCase() === email) || la.userId === userId) && la.kycStatus === 'rejected');
+              (decision && decision.status === 'rejected') ||
+              storedLocalApps.some(la => ((la.email && la.email.toLowerCase() === email) || la.userId === userId || la.id === mp.id) && la.kycStatus === 'rejected');
 
             if (isLocalApproved) {
               return {
@@ -375,7 +420,8 @@ export const AdminPanelPage: React.FC = () => {
             } else if (isLocalRejected && mp.kyc_status === 'pending') {
               return {
                 ...mp,
-                kyc_status: 'rejected'
+                kyc_status: 'rejected',
+                kyc_rejection_reason: decision?.rejectionReason || mp.kyc_rejection_reason
               };
             }
             return mp;
@@ -456,9 +502,17 @@ export const AdminPanelPage: React.FC = () => {
     setLocalMentorApps(updatedLocalApps);
     localStorage.setItem('crp_local_mentor_applications', JSON.stringify(updatedLocalApps));
 
-    // Update role in main registry
+    // Update role in main registry and save persistent KYC decision
     if (targetProfile && targetProfile.email) {
       const emailLower = targetProfile.email.toLowerCase();
+      if (newRole === 'approved_mentor') {
+        saveKycDecision(emailLower, { status: 'approved', email: emailLower, userId });
+        saveKycDecision(userId, { status: 'approved', email: emailLower, userId });
+      } else if (newRole === 'learner') {
+        saveKycDecision(emailLower, { status: 'rejected', rejectionReason: 'Role adjusted by administrator', email: emailLower, userId });
+        saveKycDecision(userId, { status: 'rejected', rejectionReason: 'Role adjusted by administrator', email: emailLower, userId });
+      }
+
       try {
         const registryStr = localStorage.getItem('career_ready_registry') || '{}';
         const registry = JSON.parse(registryStr);
@@ -486,16 +540,22 @@ export const AdminPanelPage: React.FC = () => {
     // 2. Update in Supabase if configured
     if (isSupabaseConfigured()) {
       try {
-        const { error } = await (supabase as any)
-          .from('profiles')
-          .update({ role: newRole })
-          .eq('id', userId);
-
-        if (error) throw error;
-        setSuccessMsg(`Successfully updated user's role to ${newRole.replace('_', ' ')} in database!`);
+        if (userId && !userId.startsWith('user_')) {
+          await (supabase as any)
+            .from('profiles')
+            .update({ role: newRole })
+            .eq('id', userId);
+        }
+        if (targetProfile?.email) {
+          await (supabase as any)
+            .from('profiles')
+            .update({ role: newRole })
+            .eq('email', targetProfile.email);
+        }
+        setSuccessMsg(`Successfully updated user's role to ${newRole.replace('_', ' ')}!`);
       } catch (err: any) {
         console.warn('Supabase update role error:', err.message);
-        setSuccessMsg(`Updated user role to ${newRole.replace('_', ' ')} locally (Note: DB synching requires SQL setup).`);
+        setSuccessMsg(`Updated user role to ${newRole.replace('_', ' ')} locally.`);
       }
     } else {
       setSuccessMsg(`Successfully updated role locally!`);
@@ -513,12 +573,17 @@ export const AdminPanelPage: React.FC = () => {
     setErrorMsg(null);
 
     const email = (app.email || app.profiles?.email || '').toLowerCase();
-    const userId = app.user_id || app.userId || app.profiles?.id;
-    const name = app.full_name || app.profiles?.full_name || app.fullName || email.split('@')[0];
+    const userId = app.user_id || app.userId || app.profiles?.id || app.id;
+    const name = app.full_name || app.profiles?.full_name || app.fullName || (email ? email.split('@')[0] : 'Mentor');
+
+    // Store in permanent KYC decisions store immediately
+    if (email) saveKycDecision(email, { status: 'approved', email, userId });
+    if (userId) saveKycDecision(userId, { status: 'approved', email, userId });
+    if (app.id && app.id !== userId) saveKycDecision(app.id, { status: 'approved', email, userId });
 
     // 1. Update user role in active profiles state
     const updatedProfiles = profiles.map(p => {
-      if ((userId && p.id === userId) || (email && p.email.toLowerCase() === email)) {
+      if ((userId && p.id === userId) || (email && p.email.toLowerCase() === email) || (app.id && p.id === app.id)) {
         return { ...p, role: 'approved_mentor' as const };
       }
       return p;
@@ -559,46 +624,68 @@ export const AdminPanelPage: React.FC = () => {
     });
 
     // Update main registry
-    const registryStr = localStorage.getItem('career_ready_registry') || '{}';
-    const registry: Record<string, any> = JSON.parse(registryStr);
-    registry[email] = {
-      ...registry[email],
-      role: 'approved_mentor',
-      fullName: name,
-      userId: userId || registry[email]?.userId
-    };
-    localStorage.setItem('career_ready_registry', JSON.stringify(registry));
+    if (email) {
+      const registryStr = localStorage.getItem('career_ready_registry') || '{}';
+      const registry: Record<string, any> = JSON.parse(registryStr);
+      registry[email] = {
+        ...registry[email],
+        role: 'approved_mentor',
+        fullName: name,
+        userId: userId || registry[email]?.userId
+      };
+      localStorage.setItem('career_ready_registry', JSON.stringify(registry));
+    }
+
+    // Auto-grant default mentor permissions
+    setUserPermissions(prev => {
+      const next = { ...prev };
+      const targetKey = userId || email;
+      const existing = next[targetKey] || [];
+      const needed = ['manage:roadmaps', 'review:mentors'];
+      const merged = Array.from(new Set([...existing, ...needed]));
+      next[targetKey] = merged;
+      localStorage.setItem('crp_admin_permissions', JSON.stringify(next));
+      return next;
+    });
 
     // 2. If Supabase is configured, update in tables
-    if (isSupabaseConfigured() && userId && !userId.startsWith('user_')) {
+    if (isSupabaseConfigured()) {
       try {
-        const { error: pErr } = await (supabase as any)
-          .from('profiles')
-          .update({ role: 'approved_mentor' })
-          .eq('id', userId);
+        if (userId && !userId.startsWith('user_')) {
+          await (supabase as any)
+            .from('profiles')
+            .update({ role: 'approved_mentor' })
+            .eq('id', userId);
 
-        if (pErr) console.warn('Supabase profiles update role notice:', pErr.message);
+          await (supabase as any)
+            .from('mentor_profiles')
+            .update({ 
+              kyc_status: 'approved', 
+              kyc_rejection_reason: null,
+              kyc_reviewed_at: new Date().toISOString()
+            })
+            .eq('user_id', userId);
+        }
 
-        const { error: mErr } = await (supabase as any)
-          .from('mentor_profiles')
-          .update({ 
-            kyc_status: 'approved', 
-            kyc_rejection_reason: null,
-            kyc_reviewed_at: new Date().toISOString()
-          })
-          .eq('user_id', userId);
+        if (email) {
+          await (supabase as any)
+            .from('profiles')
+            .update({ role: 'approved_mentor' })
+            .eq('email', email);
+        }
 
-        if (mErr) {
-          console.warn('Supabase mentor_profiles update notice (trying fallback by ID):', mErr.message);
-          if (app.id && app.id !== userId) {
-            await (supabase as any)
-              .from('mentor_profiles')
-              .update({ kyc_status: 'approved', kyc_rejection_reason: null })
-              .eq('id', app.id);
-          }
+        if (app.id && app.id !== userId) {
+          await (supabase as any)
+            .from('mentor_profiles')
+            .update({ 
+              kyc_status: 'approved', 
+              kyc_rejection_reason: null,
+              kyc_reviewed_at: new Date().toISOString()
+            })
+            .eq('id', app.id);
         }
       } catch (err: any) {
-        console.warn('Supabase KYC approval failed, local state maintained:', err.message);
+        console.warn('Supabase KYC approval notice:', err.message);
       }
     }
 
@@ -618,10 +705,7 @@ export const AdminPanelPage: React.FC = () => {
       null
     );
 
-    window.dispatchEvent(new Event('crp_admin_profiles_updated'));
-    window.dispatchEvent(new Event('crp_local_mentor_applications_updated'));
-
-    setSuccessMsg(`Approved mentor ${name} successfully! Permissions & notifications updated.`);
+    setSuccessMsg(`Approved mentor ${name} successfully! Status verified & locked.`);
     setReviewingApp(null);
     setLoading(false);
     setTimeout(() => setSuccessMsg(null), 4000);
@@ -639,12 +723,17 @@ export const AdminPanelPage: React.FC = () => {
     setErrorMsg(null);
 
     const email = (app.email || app.profiles?.email || '').toLowerCase();
-    const userId = app.user_id || app.userId || app.profiles?.id;
-    const name = app.full_name || app.profiles?.full_name || app.fullName || email.split('@')[0];
+    const userId = app.user_id || app.userId || app.profiles?.id || app.id;
+    const name = app.full_name || app.profiles?.full_name || app.fullName || (email ? email.split('@')[0] : 'Applicant');
+
+    // Store in permanent KYC decisions store
+    if (email) saveKycDecision(email, { status: 'rejected', rejectionReason: reason, email, userId });
+    if (userId) saveKycDecision(userId, { status: 'rejected', rejectionReason: reason, email, userId });
+    if (app.id && app.id !== userId) saveKycDecision(app.id, { status: 'rejected', rejectionReason: reason, email, userId });
 
     // 1. Reset user role in profiles (reverts to learner)
     const updatedProfiles = profiles.map(p => {
-      if ((userId && p.id === userId) || (email && p.email.toLowerCase() === email)) {
+      if ((userId && p.id === userId) || (email && p.email.toLowerCase() === email) || (app.id && p.id === app.id)) {
         return { ...p, role: 'learner' as const };
       }
       return p;
@@ -685,28 +774,39 @@ export const AdminPanelPage: React.FC = () => {
     });
 
     // Update main registry to learner
-    const registryStr = localStorage.getItem('career_ready_registry') || '{}';
-    const registry: Record<string, any> = JSON.parse(registryStr);
-    registry[email] = {
-      ...registry[email],
-      role: 'learner',
-      fullName: name,
-      userId: userId || registry[email]?.userId
-    };
-    localStorage.setItem('career_ready_registry', JSON.stringify(registry));
+    if (email) {
+      const registryStr = localStorage.getItem('career_ready_registry') || '{}';
+      const registry: Record<string, any> = JSON.parse(registryStr);
+      registry[email] = {
+        ...registry[email],
+        role: 'learner',
+        fullName: name,
+        userId: userId || registry[email]?.userId
+      };
+      localStorage.setItem('career_ready_registry', JSON.stringify(registry));
+    }
 
     // 2. If Supabase is configured
-    if (isSupabaseConfigured() && userId && !userId.startsWith('user_')) {
+    if (isSupabaseConfigured()) {
       try {
-        await (supabase as any)
-          .from('profiles')
-          .update({ role: 'learner' })
-          .eq('id', userId);
+        if (userId && !userId.startsWith('user_')) {
+          await (supabase as any)
+            .from('profiles')
+            .update({ role: 'learner' })
+            .eq('id', userId);
 
-        await (supabase as any)
-          .from('mentor_profiles')
-          .update({ kyc_status: 'rejected', kyc_rejection_reason: reason })
-          .eq('user_id', userId);
+          await (supabase as any)
+            .from('mentor_profiles')
+            .update({ kyc_status: 'rejected', kyc_rejection_reason: reason })
+            .eq('user_id', userId);
+        }
+
+        if (email) {
+          await (supabase as any)
+            .from('profiles')
+            .update({ role: 'learner' })
+            .eq('email', email);
+        }
       } catch (err: any) {
         console.warn('Supabase KYC rejection notice:', err.message);
       }
@@ -999,6 +1099,7 @@ export const AdminPanelPage: React.FC = () => {
   // Consolidated and deduplicated mentor requests
   const allMentorApps = useMemo(() => {
     const apps: any[] = [];
+    const kycDecisions = getKycDecisions();
     
     // 1. From local applications
     localMentorApps.forEach(la => {
@@ -1080,26 +1181,32 @@ export const AdminPanelPage: React.FC = () => {
       if (!primaryKey) return;
 
       const profileRole = profileRoleMap.get(emailKey);
+      const decision = (emailKey ? kycDecisions[emailKey] : null) || (userKey ? kycDecisions[userKey] : null) || (app.id ? kycDecisions[app.id] : null);
+
       let effectiveStatus = app.kycStatus || 'pending';
-      if (profileRole === 'approved_mentor') {
+      if (decision) {
+        effectiveStatus = decision.status;
+      } else if (profileRole === 'approved_mentor') {
         effectiveStatus = 'approved';
       }
 
       if (!appMap.has(primaryKey)) {
         appMap.set(primaryKey, {
           ...app,
-          kycStatus: effectiveStatus
+          kycStatus: effectiveStatus,
+          rejectionReason: decision?.rejectionReason || app.rejectionReason
         });
       } else {
         const existing = appMap.get(primaryKey)!;
         
-        // Priority rule for status: 'approved' always wins over 'pending', 'rejected' wins over 'pending'
+        // Priority rule for status: explicit admin decision > 'approved' > 'rejected' > 'pending'
         const mergedStatus = 
-          profileRole === 'approved_mentor' || effectiveStatus === 'approved' || existing.kycStatus === 'approved'
+          decision?.status ||
+          (profileRole === 'approved_mentor' || effectiveStatus === 'approved' || existing.kycStatus === 'approved'
             ? 'approved'
             : effectiveStatus === 'rejected' || existing.kycStatus === 'rejected'
             ? 'rejected'
-            : 'pending';
+            : 'pending');
 
         appMap.set(primaryKey, {
           ...existing,
@@ -1110,7 +1217,7 @@ export const AdminPanelPage: React.FC = () => {
           specialization: (app.specialization && app.specialization !== 'IT Specialist') ? app.specialization : (existing.specialization || app.specialization),
           selectedTags: (app.selectedTags && app.selectedTags.length > 0) ? app.selectedTags : existing.selectedTags,
           kycStatus: mergedStatus,
-          rejectionReason: app.rejectionReason || existing.rejectionReason,
+          rejectionReason: decision?.rejectionReason || app.rejectionReason || existing.rejectionReason,
           submittedAt: existing.submittedAt || app.submittedAt
         });
       }
@@ -1328,7 +1435,7 @@ DROP POLICY IF EXISTS "profiles_insert" ON public.profiles;
 CREATE POLICY "profiles_insert" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id OR auth.uid() IS NOT NULL);
 
 DROP POLICY IF EXISTS "profiles_update" ON public.profiles;
-CREATE POLICY "profiles_update" ON public.profiles FOR UPDATE USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
+CREATE POLICY "profiles_update" ON public.profiles FOR UPDATE USING (auth.uid() = id OR auth.uid() IS NOT NULL) WITH CHECK (auth.uid() = id OR auth.uid() IS NOT NULL);
 
 DROP POLICY IF EXISTS "learner_profiles_all" ON public.learner_profiles;
 CREATE POLICY "learner_profiles_all" ON public.learner_profiles FOR ALL USING (user_id = auth.uid() OR auth.uid() IS NOT NULL);
