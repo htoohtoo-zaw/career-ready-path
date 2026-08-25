@@ -1008,10 +1008,163 @@ export const AdminPanelPage: React.FC = () => {
 
   // SQL Script to run in Supabase SQL editor
   const sqlScript = `-- ==============================================================================
--- SQL script to execute in Supabase SQL editor to enable Permissions Management
+-- CAREER READY PATH PLATFORM — SUPABASE SCHEMA & RLS SYNCHRONIZER
+-- Run this in the Supabase SQL Editor to enable full cross-device storage & RLS
 -- ==============================================================================
 
--- 1. Create permissions reference table
+-- 1. EXTENSIONS
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+-- 2. CORE PROFILES TABLE
+CREATE TABLE IF NOT EXISTS public.profiles (
+  id                  UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  email               TEXT NOT NULL,
+  full_name           TEXT,
+  avatar_url          TEXT,
+  role                TEXT NOT NULL DEFAULT 'learner',
+  raw_user_meta_data  JSONB DEFAULT '{}'::jsonb,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 3. LEARNER PROFILES (MULTI-DEVICE ROADMAP & CV PROGRESS)
+CREATE TABLE IF NOT EXISTS public.learner_profiles (
+  id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id                 UUID NOT NULL UNIQUE REFERENCES public.profiles(id) ON DELETE CASCADE,
+  target_role             TEXT,
+  education_background    TEXT,
+  weekly_study_hours      TEXT,
+  onboarding_completed    BOOLEAN NOT NULL DEFAULT false,
+  customized_roadmap      JSONB DEFAULT NULL,
+  customized_cv           JSONB DEFAULT NULL,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 4. MENTOR PROFILES & KYC
+CREATE TABLE IF NOT EXISTS public.mentor_profiles (
+  id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id                 UUID NOT NULL UNIQUE REFERENCES public.profiles(id) ON DELETE CASCADE,
+  bio                     TEXT,
+  linkedin_url            TEXT,
+  github_url              TEXT,
+  twitter_url             TEXT,
+  website_url             TEXT,
+  resume_path             TEXT,
+  booking_url             TEXT,
+  specialization          TEXT,
+  experience_years        NUMERIC DEFAULT 5,
+  tags                    TEXT[] DEFAULT ARRAY[]::TEXT[],
+  program_title           TEXT,
+  program_description     TEXT,
+  google_form_url         TEXT,
+  is_program_published    BOOLEAN DEFAULT true,
+  education_background    TEXT,
+  certification           TEXT,
+  work_experience         TEXT,
+  kyc_status              TEXT NOT NULL DEFAULT 'pending',
+  kyc_rejection_reason    TEXT,
+  kyc_submitted_at        TIMESTAMPTZ,
+  kyc_reviewed_at         TIMESTAMPTZ,
+  kyc_reviewed_by         UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 5. MENTORSHIP REQUESTS (1-ON-1 SESSIONS)
+CREATE TABLE IF NOT EXISTS public.mentorship_requests (
+  id                  TEXT PRIMARY KEY,
+  learner_id          TEXT NOT NULL,
+  learner_name        TEXT,
+  learner_email       TEXT,
+  mentor_id           TEXT NOT NULL,
+  mentor_name         TEXT,
+  mentor_avatar       TEXT,
+  roadmap_track       TEXT,
+  skill_level         TEXT,
+  github_or_portfolio TEXT,
+  goals               TEXT,
+  preferred_pace      TEXT,
+  status              TEXT NOT NULL DEFAULT 'pending',
+  mentor_notes        TEXT,
+  accepted_at         TIMESTAMPTZ,
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 6. REVIEW REQUESTS & MENTOR FEEDBACK
+CREATE TABLE IF NOT EXISTS public.review_requests (
+  id                        TEXT PRIMARY KEY,
+  learner_id                TEXT NOT NULL,
+  learner_name              TEXT,
+  learner_email             TEXT,
+  learner_experience_years  TEXT,
+  mentor_id                 TEXT,
+  mentor_name               TEXT,
+  mentor_email              TEXT,
+  track_slug                TEXT,
+  track_title               TEXT,
+  milestone_id              TEXT,
+  milestone_title           TEXT,
+  type                      TEXT NOT NULL DEFAULT 'code_review',
+  submission_title          TEXT NOT NULL,
+  repo_url                  TEXT,
+  live_demo_url             TEXT,
+  preferred_date            TEXT,
+  preferred_time_slot       TEXT,
+  notes                     TEXT,
+  status                    TEXT NOT NULL DEFAULT 'pending',
+  created_at                TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at                TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS public.mentor_feedback (
+  id                      TEXT PRIMARY KEY,
+  request_id              TEXT NOT NULL REFERENCES public.review_requests(id) ON DELETE CASCADE,
+  mentor_id               TEXT NOT NULL,
+  mentor_name             TEXT,
+  mentor_specialization   TEXT,
+  outcome                 TEXT NOT NULL,
+  overall_score           NUMERIC DEFAULT 4.5,
+  executive_summary       TEXT,
+  rubrics                 JSONB DEFAULT '{}'::jsonb,
+  key_strengths           TEXT[] DEFAULT ARRAY[]::TEXT[],
+  areas_for_improvement   TEXT[] DEFAULT ARRAY[]::TEXT[],
+  recommended_resources   JSONB DEFAULT '[]'::jsonb,
+  actionable_next_steps   TEXT,
+  is_read_by_learner      BOOLEAN NOT NULL DEFAULT false,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 7. REVIEWS & RATINGS
+CREATE TABLE IF NOT EXISTS public.reviews (
+  id                  TEXT PRIMARY KEY,
+  mentor_id           TEXT NOT NULL,
+  learner_id          TEXT NOT NULL,
+  learner_name        TEXT,
+  learner_role        TEXT,
+  overall_rating      NUMERIC NOT NULL DEFAULT 5,
+  metrics             JSONB DEFAULT '{"codeFeedback": 5, "clarity": 5, "responsiveness": 5, "careerAdvice": 5}'::jsonb,
+  review_title        TEXT,
+  review_text         TEXT,
+  track_name          TEXT,
+  tags                TEXT[] DEFAULT ARRAY['🌟 Helpful Review']::TEXT[],
+  helpful_count       INT DEFAULT 0,
+  liked_by            TEXT[] DEFAULT ARRAY[]::TEXT[],
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 8. NOTIFICATIONS & PERMISSIONS
+CREATE TABLE IF NOT EXISTS public.notifications (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     TEXT,
+  title       TEXT NOT NULL,
+  message     TEXT NOT NULL,
+  type        TEXT NOT NULL DEFAULT 'system',
+  is_read     BOOLEAN NOT NULL DEFAULT false,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS public.permissions (
   code          TEXT PRIMARY KEY,
   name          TEXT NOT NULL,
@@ -1019,7 +1172,6 @@ CREATE TABLE IF NOT EXISTS public.permissions (
   created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- 2. Create junction table for user granular permissions override
 CREATE TABLE IF NOT EXISTS public.user_permissions (
   user_id         UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
   permission_code TEXT NOT NULL REFERENCES public.permissions(code) ON DELETE CASCADE,
@@ -1027,35 +1179,57 @@ CREATE TABLE IF NOT EXISTS public.user_permissions (
   PRIMARY KEY (user_id, permission_code)
 );
 
--- 3. Enable RLS and setup simple access policies
+-- 9. ENABLE ROW LEVEL SECURITY (RLS)
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.learner_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mentor_profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mentorship_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.review_requests ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.mentor_feedback ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.notifications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.permissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_permissions ENABLE ROW LEVEL SECURITY;
 
-CREATE POLICY "Anyone can view permissions" 
-  ON public.permissions FOR SELECT USING (true);
+-- 10. SETUP CROSS-DEVICE RLS POLICIES
+DROP POLICY IF EXISTS "profiles_select" ON public.profiles;
+CREATE POLICY "profiles_select" ON public.profiles FOR SELECT USING (true);
 
-CREATE POLICY "Admins manage permissions table" 
-  ON public.permissions FOR ALL USING (public.is_admin());
+DROP POLICY IF EXISTS "profiles_insert" ON public.profiles;
+CREATE POLICY "profiles_insert" ON public.profiles FOR INSERT WITH CHECK (auth.uid() = id OR auth.uid() IS NOT NULL);
 
-CREATE POLICY "Users can view own permissions" 
-  ON public.user_permissions FOR SELECT USING (user_id = auth.uid() OR public.is_admin());
+DROP POLICY IF EXISTS "profiles_update" ON public.profiles;
+CREATE POLICY "profiles_update" ON public.profiles FOR UPDATE USING (auth.uid() = id) WITH CHECK (auth.uid() = id);
 
-CREATE POLICY "Admins manage user permissions" 
-  ON public.user_permissions FOR ALL USING (public.is_admin());
+DROP POLICY IF EXISTS "learner_profiles_all" ON public.learner_profiles;
+CREATE POLICY "learner_profiles_all" ON public.learner_profiles FOR ALL USING (user_id = auth.uid() OR auth.uid() IS NOT NULL);
 
--- 4. Seed system permissions definitions
-INSERT INTO public.permissions (code, name, description)
-VALUES 
-  ('manage:users', 'Manage Users & Roles', 'Ability to edit roles, elevate users, and override system settings.'),
-  ('manage:roadmaps', 'Curate Roadmaps & Nodes', 'Modify learning paths, update nodes, and attach reference links.'),
-  ('review:mentors', 'Review Mentor Applications', 'Approve or reject pending industry mentors and complete KYC.')
-ON CONFLICT (code) DO UPDATE 
-SET name = EXCLUDED.name, description = EXCLUDED.description;
+DROP POLICY IF EXISTS "mentor_profiles_select" ON public.mentor_profiles;
+CREATE POLICY "mentor_profiles_select" ON public.mentor_profiles FOR SELECT USING (true);
 
--- 5. Seed initial Admin privileges to your system profile
--- Locate your system profile ID and give full overrides:
--- INSERT INTO public.user_permissions (user_id, permission_code)
--- SELECT id, 'manage:users' FROM public.profiles WHERE role = 'admin' ON CONFLICT DO NOTHING;
+DROP POLICY IF EXISTS "mentor_profiles_modify" ON public.mentor_profiles;
+CREATE POLICY "mentor_profiles_modify" ON public.mentor_profiles FOR ALL USING (user_id = auth.uid() OR auth.uid() IS NOT NULL);
+
+DROP POLICY IF EXISTS "mentorship_requests_all" ON public.mentorship_requests;
+CREATE POLICY "mentorship_requests_all" ON public.mentorship_requests FOR ALL USING (true);
+
+DROP POLICY IF EXISTS "review_requests_all" ON public.review_requests;
+CREATE POLICY "review_requests_all" ON public.review_requests FOR ALL USING (true);
+
+DROP POLICY IF EXISTS "mentor_feedback_all" ON public.mentor_feedback;
+CREATE POLICY "mentor_feedback_all" ON public.mentor_feedback FOR ALL USING (true);
+
+DROP POLICY IF EXISTS "reviews_all" ON public.reviews;
+CREATE POLICY "reviews_all" ON public.reviews FOR ALL USING (true);
+
+DROP POLICY IF EXISTS "notifications_all" ON public.notifications;
+CREATE POLICY "notifications_all" ON public.notifications FOR ALL USING (true);
+
+DROP POLICY IF EXISTS "permissions_select" ON public.permissions;
+CREATE POLICY "permissions_select" ON public.permissions FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "user_permissions_all" ON public.user_permissions;
+CREATE POLICY "user_permissions_all" ON public.user_permissions FOR ALL USING (true);
 `;
 
   const copyToClipboard = () => {
