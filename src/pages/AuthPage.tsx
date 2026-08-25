@@ -54,19 +54,51 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
 
     try {
       if (mode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              full_name: fullName,
-              role: signupRole,
+        let newUserId = 'user_' + cleanEmail.replace(/[^a-z0-9]/g, '');
+        let isRateLimited = false;
+
+        try {
+          const { data, error } = await supabase.auth.signUp({
+            email,
+            password,
+            options: {
+              data: {
+                full_name: fullName,
+                role: signupRole,
+              },
             },
-          },
-        });
-        if (error) throw error;
+          });
+          
+          if (error) {
+            const errStr = (error.message || '').toLowerCase();
+            const isRateLimit = errStr.includes('rate limit') || (error as any).status === 429 || (error as any).code === 'over_email_send_rate_limit';
+            
+            if (isRateLimit) {
+              isRateLimited = true;
+              try {
+                const { data: loginData } = await supabase.auth.signInWithPassword({ email, password });
+                if (loginData?.user?.id) {
+                  newUserId = loginData.user.id;
+                }
+              } catch (e) {
+                // Ignore signIn error
+              }
+            } else {
+              throw error;
+            }
+          } else if (data.user?.id) {
+            newUserId = data.user.id;
+          }
+        } catch (err: any) {
+          const errStr = (err.message || '').toLowerCase();
+          const isRateLimit = errStr.includes('rate limit') || err.status === 429 || err.code === 'over_email_send_rate_limit';
+          if (isRateLimit) {
+            isRateLimited = true;
+          } else {
+            throw err;
+          }
+        }
         
-        const newUserId = data.user?.id || 'user_' + cleanEmail.replace(/[^a-z0-9]/g, '');
         setAuthSession(signupRole, email, fullName, newUserId);
         
         // Save to registration registry for local fallback recovery
@@ -76,7 +108,7 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
           registry[cleanEmail] = { 
             role: signupRole, 
             fullName: fullName || email.split('@')[0], 
-            password, // Store password for local offline login
+            password,
             userId: newUserId
           };
           localStorage.setItem('career_ready_registry', JSON.stringify(registry));
@@ -95,8 +127,14 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
             createdAt: new Date().toISOString(),
           });
         }
-
-        setSuccessMsg('Account created successfully! Redirecting to your personalized path...');
+        
+        // Show success message and wait before redirecting
+        if (isRateLimited) {
+          setSuccessMsg('Account registered successfully! (Notice: Email rate limit reached — session activated directly)');
+        } else {
+          setSuccessMsg('Account created successfully! Redirecting...');
+        }
+        
         setTimeout(() => {
           if (signupRole === 'pending_mentor') {
             navigate('/apply-mentor');
@@ -104,26 +142,19 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
             navigate('/onboarding');
           }
         }, 1200);
+
       } else {
         // Direct Default Admin Login Check
         if (cleanEmail === 'admin@gmail.com' && password === 'admin123') {
           const adminId = 'admin_user_01';
-          const adminName = 'System Administrator';
-          setAuthSession('admin', 'admin@gmail.com', adminName, adminId);
-          try {
-            const registryStr = localStorage.getItem('career_ready_registry') || '{}';
-            const registry = JSON.parse(registryStr);
-            registry['admin@gmail.com'] = { role: 'admin', fullName: adminName, password: 'admin123', userId: adminId };
-            localStorage.setItem('career_ready_registry', JSON.stringify(registry));
-          } catch (e) {}
-          setSuccessMsg('Logged in as Administrator (admin@gmail.com)');
+          setAuthSession('admin', cleanEmail, 'System Admin', adminId);
+          setSuccessMsg('Logged in successfully');
           setTimeout(() => {
             navigate('/admin-panel');
           }, 1000);
           return;
         }
 
-        // Try logging in via Supabase first
         let sessionData: any = null;
         let loginError: any = null;
 
@@ -136,8 +167,8 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
           sessionData = data;
         } catch (err: any) {
           loginError = err;
-          
-          // Verify with local registry as a secure fallback to support seamless offline/local login
+
+          // Check if local registry has credentials to recover seamlessly
           try {
             const registryStr = localStorage.getItem('career_ready_registry') || '{}';
             const registry = JSON.parse(registryStr);
@@ -167,13 +198,12 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
               return;
             }
           } catch (regErr) {
-            console.warn('Error verifying local registry fallback login:', regErr);
+            console.warn('Registry login error:', regErr);
           }
-          
-          // If fallback didn't handle it, propagate the original error
+
           throw loginError;
         }
-
+        
         const data = sessionData;
         let dbRole: string | null = null;
         let userName = data.session?.user?.user_metadata?.full_name;
@@ -197,89 +227,43 @@ export const AuthPage: React.FC<{ mode: 'login' | 'signup' }> = ({ mode }) => {
         }
 
         const metadataRole = data.session?.user?.user_metadata?.role;
-        const localRole = getAuthSession().role;
-        
-        let registryRole = null;
+        const userRole = dbRole || metadataRole || (email.toLowerCase().includes('admin') ? 'admin' : 'learner');
+        const userId = data.session?.user?.id || 'user_' + cleanEmail.replace(/[^a-z0-9]/g, '');
+
         try {
           const registryStr = localStorage.getItem('career_ready_registry') || '{}';
           const registry = JSON.parse(registryStr);
-          registryRole = registry[email.toLowerCase()]?.role;
-        } catch (e) {}
-
-        const userRole = dbRole || metadataRole || registryRole || localRole || (email.toLowerCase().includes('admin') ? 'admin' : 'learner');
-        const userId = data.session?.user?.id || 'user_' + email.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-        // Save/Sync to registry on successful login too!
-        try {
-          const registryStr = localStorage.getItem('career_ready_registry') || '{}';
-          const registry = JSON.parse(registryStr);
-          registry[email.toLowerCase()] = { role: userRole, fullName: userName || email.split('@')[0], password, userId };
+          registry[cleanEmail] = { role: userRole, fullName: userName || email.split('@')[0], password, userId };
           localStorage.setItem('career_ready_registry', JSON.stringify(registry));
         } catch (e) {}
 
         if (userRole === 'admin') {
           setAuthSession('admin', email, userName || 'System Admin', userId);
-          navigate('/admin-panel');
+          setSuccessMsg('Logged in successfully');
+          setTimeout(() => { navigate('/admin-panel'); }, 1200);
         } else if (userRole === 'pending_mentor' || userRole === 'mentor' || userRole === 'approved_mentor') {
           setAuthSession(userRole as any, email, userName, userId);
-          navigate('/apply-mentor');
+          setSuccessMsg('Logged in successfully');
+          setTimeout(() => { navigate('/apply-mentor'); }, 1200);
         } else {
           setAuthSession('learner', email, userName, userId);
           await syncLearnerProfileAfterLogin(userId, email, userName);
-          navigate('/dashboard');
+          setSuccessMsg('Logged in successfully');
+          setTimeout(() => { navigate('/dashboard'); }, 1200);
         }
       }
     } catch (err: any) {
-      const errorStr = (err.message || '').toLowerCase();
-      const isEmailConfirmIssue = errorStr.includes('confirm') || errorStr.includes('verification') || errorStr.includes('not confirmed');
-      const isRateLimit = errorStr.includes('rate limit') || err.status === 429 || errorStr.includes('over_email_send_rate_limit');
-
-      if (isRateLimit || isEmailConfirmIssue || mode === 'signup') {
-        // Fallback gracefully to local storage session so the user is never blocked!
-        const fallbackId = 'user_' + email.toLowerCase().replace(/[^a-z0-9]/g, '');
-        
-        let fallbackRole = mode === 'login' ? (email.toLowerCase().includes('admin') ? 'admin' : (isMentorIntent ? 'mentor' : 'learner')) : signupRole;
-        let fallbackName = fullName || email.split('@')[0];
-
-        // Register locally in the fallback registry so they can log in later!
-        try {
-          const registryStr = localStorage.getItem('career_ready_registry') || '{}';
-          const registry = JSON.parse(registryStr);
-          registry[email.toLowerCase()] = { role: fallbackRole, fullName: fallbackName, password, userId: fallbackId };
-          localStorage.setItem('career_ready_registry', JSON.stringify(registry));
-        } catch (e) {
-          console.warn('Error saving fallback signup to registry:', e);
-        }
-
-        setAuthSession(fallbackRole as any, email, fallbackName, fallbackId);
-        
-        if (fallbackRole === 'learner') {
-          await syncLearnerProfileAfterLogin(fallbackId, email, fallbackName);
-        }
-
-        if (isEmailConfirmIssue) {
-          setSuccessMsg('Logged in successfully and go browse your roadmap');
-        } else {
-          setSuccessMsg('Notice: Supabase email rate limit reached. Proceeding immediately using secure local session without waiting!');
-        }
-
-        setTimeout(() => {
-          if (fallbackRole === 'admin') {
-            navigate('/admin-panel');
-          } else if (fallbackRole === 'pending_mentor' || fallbackRole === 'approved_mentor') {
-            navigate('/apply-mentor');
-          } else {
-            navigate(mode === 'login' ? '/dashboard' : '/onboarding');
-          }
-        }, 1500);
-        return;
+      const errStr = (err.message || '').toLowerCase();
+      const isRateLimit = errStr.includes('rate limit') || err.status === 429 || err.code === 'over_email_send_rate_limit';
+      if (isRateLimit) {
+        setErrorMsg('Supabase email confirmation rate limit reached (3 emails/hour on default tier). You can log in directly if already registered, or try again shortly.');
+      } else {
+        setErrorMsg(err.message || 'Authentication failed. Please check your credentials.');
       }
-      setErrorMsg(err.message || 'Authentication failed. Please check your credentials.');
     } finally {
       setLoading(false);
     }
   };
-
   return (
     <div className="min-h-screen bg-zinc-950 flex flex-col justify-center py-12 sm:px-6 lg:px-8 text-zinc-100">
       <div className="sm:mx-auto sm:w-full sm:max-w-md text-center">

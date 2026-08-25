@@ -30,7 +30,8 @@ export const OnboardingPage: React.FC = () => {
   const [email, setEmail] = useState(session.email || '');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [errorMsg, setErrorMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [successMsg, setSuccessMsg] = useState<string | null>(null);
 
   // Loading state
   const [isGenerating, setIsGenerating] = useState(false);
@@ -70,40 +71,67 @@ export const OnboardingPage: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsGenerating(true);
-    setErrorMsg('');
+    setErrorMsg(null);
+    setSuccessMsg(null);
 
     try {
-      let currentUserId = session.userId || 'user_' + Date.now();
-      let currentName = fullName || session.name || email?.split('@')[0] || 'Learner';
-      let currentEmail = email || session.email;
+      const cleanEmail = email ? email.trim().toLowerCase() : (session.email || '');
+      let currentUserId = session.userId || 'user_' + (cleanEmail || 'learner').replace(/[^a-z0-9]/g, '');
+      let currentName = fullName || session.name || cleanEmail.split('@')[0] || 'Learner';
+      let currentEmail = cleanEmail || session.email || '';
+      let isRateLimited = false;
 
       if (!session.isLoggedIn && email && password) {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              role: 'learner',
-              full_name: currentName,
+        try {
+          const { data, error } = await supabase.auth.signUp({
+            email: cleanEmail,
+            password,
+            options: {
+              data: {
+                role: 'learner',
+                full_name: currentName,
+              },
             },
-          },
-        });
-        if (error) {
-          console.warn('Supabase onboarding signup note:', error.message);
+          });
+          
+          if (error) {
+            const errStr = (error.message || '').toLowerCase();
+            const isRateLimit = errStr.includes('rate limit') || (error as any).status === 429 || (error as any).code === 'over_email_send_rate_limit';
+            if (isRateLimit) {
+              isRateLimited = true;
+              try {
+                const { data: loginData } = await supabase.auth.signInWithPassword({ email: cleanEmail, password });
+                if (loginData?.user?.id) {
+                  currentUserId = loginData.user.id;
+                }
+              } catch (e) {}
+            } else {
+              throw error;
+            }
+          } else if (data?.user?.id) {
+            currentUserId = data.user.id;
+          }
+        } catch (authErr: any) {
+          const errStr = (authErr.message || '').toLowerCase();
+          const isRateLimit = errStr.includes('rate limit') || authErr.status === 429 || authErr.code === 'over_email_send_rate_limit';
+          if (isRateLimit) {
+            isRateLimited = true;
+          } else {
+            throw authErr;
+          }
         }
-        if (data?.user?.id) {
-          currentUserId = data.user.id;
-        }
+
         setAuthSession('learner', currentEmail, currentName, currentUserId);
 
         // Save to registration registry for local fallback recovery
         try {
           const registryStr = localStorage.getItem('career_ready_registry') || '{}';
           const registry = JSON.parse(registryStr);
-          registry[currentEmail.toLowerCase()] = {
+          registry[cleanEmail] = {
             role: 'learner',
             fullName: currentName,
-            password // Store password for local login fallback
+            password,
+            userId: currentUserId,
           };
           localStorage.setItem('career_ready_registry', JSON.stringify(registry));
         } catch (e) {
@@ -117,21 +145,34 @@ export const OnboardingPage: React.FC = () => {
         setAuthSession('learner', currentEmail || 'learner@example.com', currentName, currentUserId);
       }
 
+      saveLearnerProfile({
+        user_id: currentUserId,
+        fullName: currentName,
+        targetRole: selectedRoleObj.title,
+        targetRoleSlug: selectedRoleObj.slug,
+        educationBackground,
+        weeklyStudyHours,
+        createdAt: new Date().toISOString(),
+      });
+
+      if (isRateLimited) {
+        setSuccessMsg('Registration successful! (Notice: Email rate limit reached — customized roadmap generated directly)');
+      } else {
+        setSuccessMsg('Registration successful! Generating your customized roadmap...');
+      }
+
       setTimeout(() => {
-        saveLearnerProfile({
-          user_id: currentUserId,
-          fullName: currentName,
-          targetRole: selectedRoleObj.title,
-          targetRoleSlug: selectedRoleObj.slug,
-          educationBackground,
-          weeklyStudyHours,
-          createdAt: new Date().toISOString(),
-        });
         setIsGenerating(false);
         navigate('/dashboard');
-      }, 800);
+      }, 1200);
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to complete registration.');
+      const errStr = (err.message || '').toLowerCase();
+      const isRateLimit = errStr.includes('rate limit') || err.status === 429 || err.code === 'over_email_send_rate_limit';
+      if (isRateLimit) {
+        setErrorMsg('Supabase email confirmation rate limit reached (3 emails/hour on default tier). Please log in or wait a few moments.');
+      } else {
+        setErrorMsg(err.message || 'Failed to complete registration.');
+      }
       setIsGenerating(false);
     }
   };
@@ -399,6 +440,12 @@ export const OnboardingPage: React.FC = () => {
             <div className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 flex items-start gap-3 text-red-400 text-sm">
               <AlertCircle className="h-5 w-5 shrink-0 mt-0.5" />
               <span>{errorMsg}</span>
+            </div>
+          )}
+          {successMsg && (
+            <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/30 flex items-start gap-3 text-green-400 text-sm">
+              <CheckCircle2 className="h-5 w-5 shrink-0 mt-0.5" />
+              <span>{successMsg}</span>
             </div>
           )}
 
