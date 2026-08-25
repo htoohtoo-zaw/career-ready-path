@@ -727,6 +727,21 @@ export const AdminPanelPage: React.FC = () => {
       null
     );
 
+    // Broadcast across devices using Realtime Hub
+    try {
+      if (typeof window !== 'undefined') {
+        const { realtimeHub } = await import('../lib/supabase/realtime');
+        realtimeHub.sendBroadcast('kyc_decision_update', {
+          userId,
+          email,
+          status: 'approved'
+        });
+      }
+    } catch(e) {}
+
+    window.dispatchEvent(new Event('crp_admin_profiles_updated'));
+    window.dispatchEvent(new Event('crp_local_mentor_applications_updated'));
+
     setSuccessMsg(`Approved mentor ${name} successfully! Status verified & locked.`);
     setReviewingApp(null);
     setLoading(false);
@@ -844,6 +859,19 @@ export const AdminPanelPage: React.FC = () => {
       'kyc',
       userId || null
     );
+
+    // Broadcast across devices using Realtime Hub
+    try {
+      if (typeof window !== 'undefined') {
+        const { realtimeHub } = await import('../lib/supabase/realtime');
+        realtimeHub.sendBroadcast('kyc_decision_update', {
+          userId,
+          email,
+          status: 'rejected',
+          rejectionReason: reason
+        });
+      }
+    } catch(e) {}
 
     window.dispatchEvent(new Event('crp_admin_profiles_updated'));
     window.dispatchEvent(new Event('crp_local_mentor_applications_updated'));
@@ -1162,32 +1190,6 @@ export const AdminPanelPage: React.FC = () => {
         rejectionReason: mp.kyc_rejection_reason || null,
         source: 'database'
       });
-    });
-
-    // 3. Synchronize profiles with pending_mentor or approved_mentor roles
-    profiles.forEach(p => {
-      if (p.role === 'pending_mentor' || p.role === 'approved_mentor') {
-        const em = (p.email || '').toLowerCase();
-        if (em) {
-          apps.push({
-            id: p.id,
-            userId: p.id,
-            email: p.email,
-            fullName: p.full_name || p.email.split('@')[0],
-            bio: p.role === 'pending_mentor' 
-              ? 'Applying for community industry mentorship and engineering roadmaps guidance.' 
-              : 'Verified community industry mentor.',
-            linkedinUrl: 'https://linkedin.com',
-            resumePath: 'kyc-fallbacks/david_k_cloud_architect_cv.pdf',
-            specialization: 'Cloud Infrastructure & Engineering',
-            selectedTags: ['Cloud Architecture', 'DevOps', 'Mentorship'],
-            kycStatus: p.role === 'pending_mentor' ? 'pending' : 'approved',
-            submittedAt: p.created_at || new Date().toISOString(),
-            rejectionReason: null,
-            source: 'profile'
-          });
-        }
-      }
     });
 
     // Profile role map for absolute role enforcement

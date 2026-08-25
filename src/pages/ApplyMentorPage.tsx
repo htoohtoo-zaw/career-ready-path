@@ -82,6 +82,29 @@ export const ApplyMentorPage: React.FC = () => {
       const currentSession = getAuthSession();
       if (!currentSession.isLoggedIn) return;
 
+      const targetEmail = (currentSession.email || '').toLowerCase().trim();
+      const targetUserId = currentSession.userId;
+
+      // 0. Check real-time broadcasted admin decisions (bypasses RLS failures in mock mode)
+      try {
+        const decisionsStr = localStorage.getItem('crp_kyc_admin_decisions');
+        if (decisionsStr) {
+          const decisions = JSON.parse(decisionsStr);
+          const decision = decisions[targetEmail] || decisions[targetUserId];
+          if (decision && isMounted) {
+            setKycStatus(decision.status);
+            setRejectionReason(decision.rejectionReason || null);
+            setSubmitted(decision.status === 'pending' || decision.status === 'approved' || decision.status === 'rejected');
+            
+            if (decision.status === 'approved' && currentSession.role !== 'approved_mentor' && currentSession.role !== 'admin') {
+              setAuthSession('approved_mentor', targetEmail, currentSession.name, targetUserId);
+              window.dispatchEvent(new Event('crp_auth_session_changed'));
+            }
+            return;
+          }
+        }
+      } catch (e) {}
+
       // 1. First check Supabase if configured (Authoritative source for cross-platform approval)
       if (isSupabaseConfigured()) {
         try {

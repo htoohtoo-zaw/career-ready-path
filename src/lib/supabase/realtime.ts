@@ -14,7 +14,6 @@ class SupabaseRealtimeHub {
 
   public init() {
     if (!isSupabaseConfigured() || this.isListening) return;
-
     try {
       this.activeChannel = supabase
         .channel('crp_global_realtime_sync')
@@ -67,6 +66,34 @@ class SupabaseRealtimeHub {
             window.dispatchEvent(new CustomEvent('crp_supabase_notifications_change', { detail: payload }));
           }
         )
+        .on(
+          'broadcast',
+          { event: 'kyc_decision_update' },
+          (payload) => {
+            console.log('⚡ [Realtime] Broadcast received: kyc_decision_update', payload.payload);
+            const { userId, email, status, rejectionReason } = payload.payload;
+            
+            // Sync to local storage for cross-device visibility in case DB fails
+            const kycDecisionsStr = localStorage.getItem('crp_kyc_admin_decisions') || '{}';
+            let kycDecisions = {};
+            try { kycDecisions = JSON.parse(kycDecisionsStr); } catch (e) {}
+            
+            const timestamp = new Date().toISOString();
+            if (email) {
+              (kycDecisions as any)[email.toLowerCase()] = { status, rejectionReason, timestamp };
+            }
+            if (userId) {
+              (kycDecisions as any)[userId] = { status, rejectionReason, timestamp };
+            }
+            localStorage.setItem('crp_kyc_admin_decisions', JSON.stringify(kycDecisions));
+
+            // Dispatch events to trigger UI re-renders
+            this.broadcast(payload);
+            window.dispatchEvent(new CustomEvent('crp_supabase_mentor_profiles_change', { detail: payload }));
+            window.dispatchEvent(new Event('crp_admin_profiles_updated'));
+            window.dispatchEvent(new Event('crp_local_mentor_applications_updated'));
+          }
+        )
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
             console.log('⚡ Connected to Supabase Realtime replication channels');
@@ -75,6 +102,17 @@ class SupabaseRealtimeHub {
         });
     } catch (err: any) {
       console.warn('Realtime subscription could not be established:', err.message);
+    }
+  }
+
+  // Allow manual broadcasting for bypass of RLS or offline mode
+  public sendBroadcast(event: string, payload: any) {
+    if (this.activeChannel && this.isListening) {
+      this.activeChannel.send({
+        type: 'broadcast',
+        event: event,
+        payload: payload
+      });
     }
   }
 
