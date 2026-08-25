@@ -135,7 +135,7 @@ export const ApplyMentorPage: React.FC = () => {
           }
 
           if (mentorProfile || dbProfileRole) {
-            const effectiveKycStatus = mentorProfile?.kyc_status || (dbProfileRole === 'approved_mentor' ? 'approved' : dbProfileRole === 'pending_mentor' ? 'pending' : null);
+            const effectiveKycStatus = mentorProfile?.kyc_status || (dbProfileRole === 'approved_mentor' ? 'approved' : null);
             
             if (effectiveKycStatus && isMounted) {
               setKycStatus(effectiveKycStatus);
@@ -246,10 +246,10 @@ export const ApplyMentorPage: React.FC = () => {
           setSubmitted(true);
         } else if (currentSession.role === 'pending_mentor') {
           setSubmitted(false);
-          setKycStatus(null);
+          setKycStatus('none');
         } else {
           setSubmitted(false);
-          setKycStatus(null);
+          setKycStatus('none');
         }
       }
     };
