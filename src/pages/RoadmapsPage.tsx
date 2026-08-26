@@ -10,6 +10,7 @@ import { supabase, isSupabaseConfigured } from '../lib/supabase/client';
 import type { RoadmapDifficulty } from '../lib/supabase/types';
 import { getAuthSession, hasPermission } from '../lib/learnerStore';
 import { addNotification } from '../lib/notificationsStore';
+import { pushCreatedRoadmapToSupabase } from '../lib/supabase/dataSync';
 
 interface RoadmapItem {
   id: string;
@@ -254,24 +255,13 @@ export const RoadmapsPage: React.FC = () => {
     localCreated.push(newRoadmap);
     localStorage.setItem('crp_local_created_roadmaps', JSON.stringify(localCreated));
 
-    // Save to live DB if available
+    // Save to live DB directly via pushCreatedRoadmapToSupabase
     if (isSupabaseConfigured()) {
-      try {
-        const { error } = await (supabase as any)
-          .from('roadmaps')
-          .insert({
-            title: newTitle,
-            slug,
-            description: newDescription,
-            difficulty: newDifficulty,
-            estimated_weeks: newWeeks,
-            is_published: true,
-            category: newCategory
-          });
-        if (error) throw error;
-      } catch (err: any) {
-        console.warn('Could not save roadmap to database:', err.message);
-      }
+      await pushCreatedRoadmapToSupabase(newRoadmap, [
+        { title: 'Foundational Concepts', description: 'Core principles, architecture, and toolchain setup.' },
+        { title: 'Intermediate Implementation', description: 'Building production-grade modules and design patterns.' },
+        { title: 'Advanced Scalability & Capstone', description: 'Performance optimization, deployment, and final capstone review.' }
+      ]);
     }
 
     // Trigger Notification of roadmap creation
